@@ -1,7 +1,11 @@
 """Quasi-3D low-Mach time stepper (see core.py for the discretisation).
 
 Variable-density projection with a divergence constraint (velocity projection, Dodd & Ferrante splitting):
-  1. scalars  phi^{n+1}:  Dphi/Dt = (div(Gam grad phi) + S_phi)/rho, advection with the face volume fluxes U^n
+  1. scalars  phi^{n+1}:  Dphi/Dt = (div(Gam grad phi) + S_phi)/rho, mass-consistent advective form
+     rho_c u.grad phi = div(F phi_f) - phi_c div F with MUSCL face states phi_f and face mass fluxes
+     F = rho_EOS(phi_f) U^n (see _mass_fluxes: the EOS density at the face state makes div F agree with the
+     density change implied by div U = S to O(v'' dphi^2), v = 1/rho; the upwind cell density does not, and acted
+     as an O(30 %) spurious fuel source next to the wick)
   2. rho^{n+1} = EOS(phi^{n+1});  S = div u = -(1/rho) Drho/Dt = -sum_s (1/rho) d rho/d phi_s * R_s, where R_s is the
      non-advective rate of phi_s (diffusion + sources). Advection does not enter S, which removes the feedback
      "d rho/dt from the EOS -> divergence -> advection -> rho" that makes EOS-differenced d rho/dt unstable.
@@ -27,6 +31,9 @@ class Solver:
         optional source(phi, rho, dt, t) -> phi (split stiff sources), optional fix(phis, t) (spectral constraints)."""
 
     def __init__(self, case, cfl=0.4, dt_max=2e-4, r_theta_min=None, ab2=True, beta=0.0):
+        # beta: volume-discrepancy relaxation S += beta (rho* - rho_EOS)/(rho dt). Keep 0: rho is reset to the EOS
+        # every step, so the extra volume source has no matching scalar change and recreates the mismatch
+        # (stage 3, beta = 0.3: spurious fuel source 8.6e-7 kg/s vs 1.0e-7 with beta = 0).
         self.c = case
         g = self.g = case.g
         self.f = Factor(g)
@@ -136,30 +143,54 @@ class Solver:
         return (1 + 0.5 * w) * a - 0.5 * w * prev
 
     # ------------------------------------------------------------------ physics operators
+    def _face_states(self):
+        """MUSCL face values (r and z faces) of every scalar for the volume fluxes U^n: used both for the scalar
+        fluxes and for the face density of the mass fluxes."""
+        g, c = self.g, self.c
+        self._sf = {}
+        for s in c.scalars:
+            self._sf[s] = muscl_faces(g, g.phys(self.phis[s]), self.Ur, self.Uz, c.scalar_bc[s])
+
     def _mass_fluxes(self):
-        """face mass fluxes F = rho_upwind U (boundary faces: rho of the adjacent cell, so the wick face carries
-        exactly mdot''), and their (r, z) divergence."""
-        g, rho = self.g, self.rho
-        Fr = np.empty_like(self.Ur); Fz = np.empty_like(self.Uz)
-        Fr[..., 1:-1] = self.Ur[..., 1:-1] * np.where(self.Ur[..., 1:-1] >= 0, rho[..., :-1], rho[..., 1:])
+        """face mass fluxes F = rho_f U and their (r, z) divergence.
+
+        rho_f = rho_EOS(phi_f), the equation of state at the MUSCL face state used by the scalar fluxes. This is
+        the choice for which the divergence constraint div U = S (S from the non-advective rates) and discrete
+        continuity agree: with F = rho_f U the conservative scalar update of cell c changes the EOS density by
+        -dt div F only if rho_f (v_c + v'_c (phi_f - phi_c)) = 1 on every face (v = 1/rho), i.e. rho_f is the EOS
+        density at the face state for a specific volume linear in phi (exact for mixing, close for the flame-sheet
+        and ideal-gas states). The upwind cell density violates it by a factor rho_up/rho_c (up to ~3 next to the
+        wick), which acted as a spurious source of fuel-element mass of 30-70 % of the wick supply. On the wick face
+        the face state is the Dirichlet fuel state, so F = rho_w U_w = mdot''. Cases without a density(phi)
+        method (constant density) use the upwind cell density."""
+        g, rho, c = self.g, self.rho, self.c
+        dens = getattr(c, 'density', None)
+        if dens is not None and c.scalars and not getattr(c, 'legacy_flux', False):
+            rr = dens({s: self._sf[s][0] for s in c.scalars})
+            rz = dens({s: self._sf[s][1] for s in c.scalars})
+            Fr = self.Ur * rr
+            Fz = self.Uz * rz
+        else:
+            Fr = np.empty_like(self.Ur); Fz = np.empty_like(self.Uz)
+            Fr[..., 1:-1] = self.Ur[..., 1:-1] * np.where(self.Ur[..., 1:-1] >= 0, rho[..., :-1], rho[..., 1:])
+            Fr[..., -1] = self.Ur[..., -1] * rho[..., -1]
+            Fz[:, 1:-1] = self.Uz[:, 1:-1] * np.where(self.Uz[:, 1:-1] >= 0, rho[:, :-1], rho[:, 1:])
+            Fz[:, 0] = self.Uz[:, 0] * rho[:, 0]
+            Fz[:, -1] = self.Uz[:, -1] * rho[:, -1]
+            for fam, F, U in (('r', Fr, self.Ur), ('z', Fz, self.Uz)):
+                for L, bf in g.bfaces[fam].items():
+                    F[:, bf['j'], bf['i']] = U[:, bf['j'], bf['i']] * rho[:, bf['jc'], bf['ic']]
         Fr[..., 0] = 0
-        Fr[..., -1] = self.Ur[..., -1] * rho[..., -1]
-        Fz[:, 1:-1] = self.Uz[:, 1:-1] * np.where(self.Uz[:, 1:-1] >= 0, rho[:, :-1], rho[:, 1:])
-        Fz[:, 0] = self.Uz[:, 0] * rho[:, 0]
-        Fz[:, -1] = self.Uz[:, -1] * rho[:, -1]
-        for fam, F, U in (('r', Fr, self.Ur), ('z', Fz, self.Uz)):
-            for L, bf in g.bfaces[fam].items():
-                F[:, bf['j'], bf['i']] = U[:, bf['j'], bf['i']] * rho[:, bf['jc'], bf['ic']]
         Fr[:, g.lr == OFF] = 0
         Fz[:, g.lz == OFF] = 0
         self.Fr, self.Fz = Fr, Fz
         return div_faces(g, Fr, Fz)
 
-    def _advect(self, f, fs, bc, divF):
+    def _advect(self, f, fs, bc, divF, ffaces=None):
         """u . grad f = [div_rz(F f_face) - f div_rz F] / rho + (u_theta / r) df/dtheta, F = rho U on faces
         (mass-consistent advective form: conservative for rho f where div F matches the density change)."""
         g = self.g
-        fr, fz = muscl_faces(g, f, self.Ur, self.Uz, bc)
+        fr, fz = muscl_faces(g, f, self.Ur, self.Uz, bc) if ffaces is None else ffaces
         return (div_faces(g, self.Fr * fr, self.Fz * fz) - f * divF) / self.rho + self.Ut * self.rinv * g.dth(fs=fs)
 
     def _diffuse(self, f, fs, Gam, bc):
@@ -284,21 +315,23 @@ class Solver:
         self._check_coeffs()
         dt = self._choose_dt()
         t1 = self.t + dt
-        divF = self._mass_fluxes()    # (r, z) part only: theta advection is in advective form
         # 1. scalars (Strang: half source step before and after transport if case.strang)
         t0 = time.time()
-        old = self._last_phi_n = self.phis
+        old = self.phis
         strang = getattr(c, 'strang', False)
         if strang:
             phi = {s: g.phys(self.phis[s]) for s in c.scalars}
             phi = c.source(phi, self.rho, 0.5 * dt, self.t)
             self.phis = {s: g.spec(phi[s]) for s in c.scalars}
+        self._last_phi_n = self.phis
+        self._face_states()           # face states of the transported (post half-source) scalars
+        divF = self._mass_fluxes()    # (r, z) part only: theta advection is in advective form
         adv_s, used, new = {}, {}, {}
         for s in c.scalars:
             bc = c.scalar_bc[s]
             fs = self.phis[s]
             f = g.phys(fs)
-            a = g.spec(self._advect(f, fs, bc, divF))
+            a = g.spec(self._advect(f, fs, bc, divF, self._sf[s]))
             adv_s[s] = a
             A = self._ab2(a, None if self.prev_adv_s is None else self.prev_adv_s[s], dt)
             used[s] = A
@@ -409,7 +442,7 @@ class Solver:
             Gs = self.Gam[s] if isinstance(self.Gam, dict) else self.Gam
             spur = w * (g.vol * f * (self.rho - rho_star))[:, g.fluid].sum() / dt
             fold = g.phys(self._last_phi_n[s])
-            fr, fz = muscl_faces(g, fold, self.Ur, self.Uz, bc)
+            fr, fz = self._sf[s]
             _, gr, _, gz = faces(g, fold, bc)
             Gr, Gz = interp_faces(g, Gs)
             win = wdif = out = 0.0

@@ -83,6 +83,9 @@ class FlameSheet(CandleBase):
         mu = self.lookup('mu', Z)
         return rho, mu, mu / self.Sc
 
+    def density(self, phi):
+        return self.lookup('rho', phi['Z'])
+
     def dlnrho(self, phi):
         return {'Z': self.lookup('dlnrho', phi['Z'])}
 

@@ -43,6 +43,13 @@ class Thermo(CandleBase):
         T = mech.T_from_hs(phi['hs'], Y, self.T if self.T is not None and self.T.shape == phi['hs'].shape else None)
         return T, Y
 
+    def density(self, phi):
+        """EOS density of an arbitrary state (used at faces; no side effects)"""
+        Y = mech.full_Y(np.clip(np.array([phi[s] for s in SP5]), 0, 1))
+        Y[5] = np.clip(Y[5], 0, 1)
+        Y /= Y.sum(0)
+        return mech.density(mech.T_from_hs(phi['hs'], Y, None), Y)
+
     def props(self, phi):
         T, Y = self.state(phi)
         self.T, self.Y = T, Y
@@ -122,7 +129,8 @@ def compare_axis(sol, case):
 
 
 def run(case_cls, M, V, t_end, hr, hz, restart=None, tag='stage2', t_on=-1.0, cfl=0.4, every=0.02, extra=None):
-    g = candle_grid(M, hr, hz)
+    hf = float(os.environ.get('WICK_H', 0)) * 1e-3     # optional fine spacing near the wick (mm)
+    g = candle_grid(M, hr, hz, hf=hf or None, rf_fine=float(os.environ.get('WICK_RF', 1.5)) * 1e-3)
     case = case_cls(g, V, t_on=t_on)
     print(f'{tag}: grid Nr={g.Nr} Nz={g.Nz} M={M} Nt={g.Nt} V={V}', flush=True)
     sol = Solver(case, cfl=cfl, dt_max=2e-4, beta=float(os.environ.get('BETA', 0.0)))

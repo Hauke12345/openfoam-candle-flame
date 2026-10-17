@@ -112,6 +112,8 @@ def run_all(N):
     out['taudiv'] = [errs(g, a, b) for a, b in zip((Dr, Dt, Dz), ex)]
     # 3 advect
     sol.Ur, sol.Uz, sol.Ut = urr, uzz, ut
+    sol.rho = np.ones_like(phi)                 # unit density: mass fluxes = volume fluxes
+    sol.Fr, sol.Fz = urr, uzz
     divU = div_faces(g, sol.Ur, sol.Uz)
     out['advect'] = [errs(g, sol._advect(phi, g.spec(phi), bc_s, divU), gc('adv'))]
     # 4 lap matrix

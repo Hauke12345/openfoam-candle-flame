@@ -22,7 +22,26 @@ SP5 = mech.SPECIES[:5]
 ZST = 0.0621
 
 
-def candle_grid(M, hr=0.375e-3, hz=0.5e-3, r_u=6e-3, z_u=60e-3, gr=1.12, gz=1.08):
+def refined(L, hf, x_f, h, x_u, growth, g_loc=1.15):
+    """faces on [0, L]: spacing hf up to x_f (a multiple of hf), geometric growth (<= g_loc) to h, uniform h up to
+    about x_u, then growth `growth` to L (as stretched)."""
+    f = list(np.arange(int(round(x_f / hf)) + 1) * hf)
+    d = hf
+    while d * g_loc < h:
+        d *= g_loc
+        f.append(f[-1] + d)
+    n = max(1, int(round((x_u - f[-1]) / h)))
+    f += list(f[-1] + h * np.arange(1, n + 1))
+    tail = stretched(L - f[-1], h, 0.0, growth)
+    return np.r_[f, f[-1] + tail[1:]]
+
+
+def candle_grid(M, hr=0.375e-3, hz=0.5e-3, r_u=6e-3, z_u=60e-3, gr=1.12, gz=1.08, hf=None, rf_fine=1.5e-3):
+    """hf: optional fine spacing near the wick and pool (r < rf_fine, z < 9 mm), growing smoothly to hr / hz."""
+    if hf:
+        rf = refined(R, hf, rf_fine, hr, r_u, gr)
+        zf = refined(Z, hf, 9e-3, hz, z_u, gz)
+        return Grid(rf, zf, M, wick=(R_W, Z_W), pool_r=R_C)
     return Grid(stretched(R, hr, r_u, gr), stretched(Z, hz, z_u, gz), M, wick=(R_W, Z_W), pool_r=R_C)
 
 
@@ -62,6 +81,7 @@ class CandleBase:
     def __init__(self, g, V=0.0, t_ramp=0.05, t_on=0.0):
         self.g = g
         self.V0, self.t_ramp, self.t_on = V, t_ramp, t_on
+        self.legacy_flux = bool(int(os.environ.get('LEGACY_FLUX', 0)))   # upwind-cell face density (old scheme)
         self.ref = Reference()
         self.rho_inf = mech.density(np.array(T_AIR), mech.full_Y(Y_AIR5))
         th = g.theta[:, None, None]
@@ -97,12 +117,12 @@ class CandleBase:
         vz[0][:, 0, op] = self.ur_bot[op] + v * self.cos[:, 0]
         vz[1][:, 0, op] = -v * self.sin[:, 0]
         vz[2][:, 0, op] = self.uz_bot[op]
-        # wick: normal injection. The volume flux is the mass flux divided by the density of the cell it enters
-        # (the advective-form scalar equation and div u = S then carry exactly the wick mass flow mdot)
-        rho = getattr(self, 'rho_now', None)
+        # wick: normal injection of fuel vapour at 600 K: volume flux mdot''/rho_w. The solver's face mass flux
+        # rho_EOS(face state) U uses the Dirichlet fuel state on this face, so it carries exactly mdot''.
+        legacy = getattr(self, 'legacy_flux', False) and getattr(self, 'rho_now', None) is not None
         for fam, arr in (('r', vr[0]), ('z', vz[2])):
             bf = g.bfaces[fam][WICK]
-            rb = self.rho_w if rho is None else rho[:, bf['jc'], bf['ic']]
+            rb = self.rho_now[:, bf['jc'], bf['ic']] if legacy else self.rho_w
             arr[:, bf['j'], bf['i']] = self.mflux_w / rb
         D = {OUTER, OPEN, POOL, WICK}
         return BC(D, -1.0, vr[0], vz[0]), BC(D, -1.0, vr[1], vz[1]), BC(D, 1.0, vr[2], vz[2])
