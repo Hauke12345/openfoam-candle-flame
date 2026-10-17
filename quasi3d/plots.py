@@ -43,5 +43,77 @@ def stage1():
     print('wrote figs/stage1_crossflow.png')
 
 
+
+def slice_xz(g, f):
+    """physical field (Nt, Nz, Nr) -> x-z plane through the draft (theta = 0 for x>0, pi for x<0)."""
+    i0, ipi = 0, g.Nt // 2
+    x = np.r_[-g.rc[::-1], g.rc]
+    return x, np.concatenate([f[ipi][:, ::-1], f[i0]], axis=1)
+
+
+def load_case(path, case_cls, **kw):
+    """grid + case + physical fields of a saved run"""
+    from core import Grid
+    from candle import candle_grid
+    d = np.load(path)
+    from solver import Solver
+    g = Grid(d['rf'], d['zf'], int(d['M']), wick=(0.75e-3, 6e-3), pool_r=10e-3)
+    case = case_cls(g, **kw)
+    sol = Solver(case)
+    sol.load(path)
+    return g, case, sol
+
+
+def plume_lean(g, T, zs=(0.03, 0.05, 0.08, 0.1)):
+    """x-centroid of (T - 300 K) in horizontal planes"""
+    th = g.theta[:, None]
+    X = g.rc[None, :] * np.cos(th)
+    out = {}
+    for z in zs:
+        j = np.argmin(abs(g.zc - z))
+        w = np.clip(T[:, j] - 300, 0, None) * g.rc[None, :] * g.dr[None, :]
+        out[f'{g.zc[j]*1e3:.0f}'] = float((w * X).sum() / w.sum() * 1e3)
+    return out
+
+
+def stage2():
+    from stage2_plume import Forced
+    fig, axs = plt.subplots(1, 3, figsize=(13, 5.2), gridspec_kw=dict(width_ratios=[1.2, 1, 1]))
+    a = np.load(os.path.join(OUT, 'stage2_M0_V0_h0.375_axis.npy'))   # T, Uz (ours at ref z), z_ref, T_ref, Uz_ref
+    ax = axs[0]
+    ax.plot(a[2] * 1e3, a[3], 'k-', lw=2, label='OpenFOAM T')
+    ax.plot(a[2] * 1e3, a[0], 'r--', label='quasi-3D T (M=0)')
+    ax.axvspan(0, 46, color='0.9', zorder=0)
+    ax.text(2, 400, 'forced source region\n(T, Y held, z < 46 mm)', fontsize=8)
+    ax.set_xlabel('z (mm)'); ax.set_ylabel('T on axis (K)'); ax.set_xlim(0, 110)
+    ax2 = ax.twinx()
+    ax2.plot(a[2] * 1e3, a[4], 'b-', lw=2, label='OpenFOAM u_z')
+    ax2.plot(a[2] * 1e3, a[1], 'c--', label='quasi-3D u_z')
+    ax2.set_ylabel('u_z on axis (m/s)')
+    h1, l1 = ax.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, fontsize=7, loc='lower right')
+    ax.set_title('Stage 2, M = 0: axis vs OpenFOAM')
+    f = os.path.join(OUT, 'stage2_M4_V0.2_h0.375.npz')
+    if os.path.exists(f):
+        g, case, sol = load_case(f, Forced, V=0.2)
+        F = sol.fields()
+        T, _ = case.state({s: F[s] for s in case.scalars})
+        x, Ts = slice_xz(g, T)
+        _, Us = slice_xz(g, np.sqrt(F['ur'] ** 2 + F['ut'] ** 2 + F['uz'] ** 2))
+        for ax, q, lab, cm in ((axs[1], Ts, 'T (K)', 'inferno'), (axs[2], Us, '|u| (m/s)', 'viridis')):
+            pc = ax.pcolormesh(x * 1e3, g.zc * 1e3, q, cmap=cm, shading='auto')
+            plt.colorbar(pc, ax=ax, label=lab)
+            ax.set_xlim(-25, 25); ax.set_ylim(0, 120); ax.set_aspect('equal')
+            ax.set_xlabel('x (mm), draft →'); ax.set_ylabel('z (mm)')
+        lean = plume_lean(g, T)
+        axs[1].set_title(f'M = 4, V = 0.2 m/s, t = {float(sol.t):.2f} s')
+        axs[2].set_title('plume x-centroid (mm): ' + ', '.join(f'{k}:{v:.1f}' for k, v in lean.items()), fontsize=8)
+        json.dump(dict(t=float(sol.t), plume_centroid_x_mm=lean), open(os.path.join(OUT, 'stage2_lean.json'), 'w'), indent=1)
+        print('lean', lean)
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG, 'stage2_plume.png'), dpi=120)
+    print('wrote figs/stage2_plume.png')
+
+
 if __name__ == '__main__':
     globals()[sys.argv[1]]()

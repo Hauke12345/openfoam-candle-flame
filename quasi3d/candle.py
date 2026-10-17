@@ -97,11 +97,13 @@ class CandleBase:
         vz[0][:, 0, op] = self.ur_bot[op] + v * self.cos[:, 0]
         vz[1][:, 0, op] = -v * self.sin[:, 0]
         vz[2][:, 0, op] = self.uz_bot[op]
-        # wick: normal injection
-        bf = g.bfaces['r'][WICK]
-        vr[0][:, bf['j'], bf['i']] = self.mflux_w / self.rho_w
-        bf = g.bfaces['z'][WICK]
-        vz[2][:, bf['j'], bf['i']] = self.mflux_w / self.rho_w
+        # wick: normal injection. The volume flux is the mass flux divided by the density of the cell it enters
+        # (the advective-form scalar equation and div u = S then carry exactly the wick mass flow mdot)
+        rho = getattr(self, 'rho_now', None)
+        for fam, arr in (('r', vr[0]), ('z', vz[2])):
+            bf = g.bfaces[fam][WICK]
+            rb = self.rho_w if rho is None else rho[:, bf['jc'], bf['ic']]
+            arr[:, bf['j'], bf['i']] = self.mflux_w / rb
         D = {OUTER, OPEN, POOL, WICK}
         return BC(D, -1.0, vr[0], vz[0]), BC(D, -1.0, vr[1], vz[1]), BC(D, 1.0, vr[2], vz[2])
 

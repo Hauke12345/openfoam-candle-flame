@@ -26,11 +26,12 @@ class Solver:
         dlnrho(phi) -> dict s -> (1/rho) d rho / d phi_s (physical), only for scalars that affect rho,
         optional source(phi, rho, dt, t) -> phi (split stiff sources), optional fix(phis, t) (spectral constraints)."""
 
-    def __init__(self, case, cfl=0.4, dt_max=2e-4, r_theta_min=None, ab2=True):
+    def __init__(self, case, cfl=0.4, dt_max=2e-4, r_theta_min=None, ab2=True, beta=0.0):
         self.c = case
         g = self.g = case.g
         self.f = Factor(g)
-        self.cfl, self.dt_max, self.ab2 = cfl, dt_max, ab2
+        self.cfl, self.dt_max, self.ab2, self.beta = cfl, dt_max, ab2, beta
+        self.mismatch = 0.0
         self.r_theta_min = r_theta_min if r_theta_min is not None else 4 * g.rc[0]
         self.t, self.n = 0.0, 0
         sh = (g.M + 1, g.Nz, g.Nr)
@@ -52,6 +53,7 @@ class Solver:
     def set_state(self, u_phys, phi_phys, t=0.0):
         """u_phys: (3, Nt, Nz, Nr) physical velocity; phi_phys: dict of physical scalars. Projects u (S = 0)."""
         g = self.g
+        c = self.c
         self.t = t
         for s in self.c.scalars:
             self.phis[s] = g.spec(phi_phys[s])
@@ -60,6 +62,7 @@ class Solver:
         self.us[:, :, g.solid] = 0
         self.rho, self.mu, self.Gam = self._props()
         self.rho0 = self.rho[:, g.fluid].min()
+        c.rho_now = self.rho
         u = np.array([g.phys(self.us[k]) for k in range(3)])
         self.Ur, self.Uz, self.Ut = self._flux_star(u, self.t, 1.0, None)
         self._project(1.0, u, np.zeros_like(self.S), keep_p=False)
@@ -133,11 +136,31 @@ class Solver:
         return (1 + 0.5 * w) * a - 0.5 * w * prev
 
     # ------------------------------------------------------------------ physics operators
-    def _advect(self, f, fs, bc, divU):
-        """u . grad f  =  div_rz(U f_face) - f div_rz U + (u_theta / r) df/dtheta."""
+    def _mass_fluxes(self):
+        """face mass fluxes F = rho_upwind U (boundary faces: rho of the adjacent cell, so the wick face carries
+        exactly mdot''), and their (r, z) divergence."""
+        g, rho = self.g, self.rho
+        Fr = np.empty_like(self.Ur); Fz = np.empty_like(self.Uz)
+        Fr[..., 1:-1] = self.Ur[..., 1:-1] * np.where(self.Ur[..., 1:-1] >= 0, rho[..., :-1], rho[..., 1:])
+        Fr[..., 0] = 0
+        Fr[..., -1] = self.Ur[..., -1] * rho[..., -1]
+        Fz[:, 1:-1] = self.Uz[:, 1:-1] * np.where(self.Uz[:, 1:-1] >= 0, rho[:, :-1], rho[:, 1:])
+        Fz[:, 0] = self.Uz[:, 0] * rho[:, 0]
+        Fz[:, -1] = self.Uz[:, -1] * rho[:, -1]
+        for fam, F, U in (('r', Fr, self.Ur), ('z', Fz, self.Uz)):
+            for L, bf in g.bfaces[fam].items():
+                F[:, bf['j'], bf['i']] = U[:, bf['j'], bf['i']] * rho[:, bf['jc'], bf['ic']]
+        Fr[:, g.lr == OFF] = 0
+        Fz[:, g.lz == OFF] = 0
+        self.Fr, self.Fz = Fr, Fz
+        return div_faces(g, Fr, Fz)
+
+    def _advect(self, f, fs, bc, divF):
+        """u . grad f = [div_rz(F f_face) - f div_rz F] / rho + (u_theta / r) df/dtheta, F = rho U on faces
+        (mass-consistent advective form: conservative for rho f where div F matches the density change)."""
         g = self.g
         fr, fz = muscl_faces(g, f, self.Ur, self.Uz, bc)
-        return div_faces(g, self.Ur * fr, self.Uz * fz) - f * divU + self.Ut * self.rinv * g.dth(fs=fs)
+        return (div_faces(g, self.Fr * fr, self.Fz * fz) - f * divF) / self.rho + self.Ut * self.rinv * g.dth(fs=fs)
 
     def _diffuse(self, f, fs, Gam, bc):
         """div(Gam grad f) with face gradients, theta part pseudo-spectral."""
@@ -261,7 +284,7 @@ class Solver:
         self._check_coeffs()
         dt = self._choose_dt()
         t1 = self.t + dt
-        divU = div_faces(g, self.Ur, self.Uz)    # (r, z) part only: theta advection is in advective form
+        divF = self._mass_fluxes()    # (r, z) part only: theta advection is in advective form
         # 1. scalars (Strang: half source step before and after transport if case.strang)
         t0 = time.time()
         old = self.phis
@@ -275,7 +298,7 @@ class Solver:
             bc = c.scalar_bc[s]
             fs = self.phis[s]
             f = g.phys(fs)
-            a = g.spec(self._advect(f, fs, bc, divU))
+            a = g.spec(self._advect(f, fs, bc, divF))
             adv_s[s] = a
             A = self._ab2(a, None if self.prev_adv_s is None else self.prev_adv_s[s], dt)
             used[s] = A
@@ -299,13 +322,20 @@ class Solver:
             c.fix(self.phis, t1)
         self.timing['src'] += time.time() - t0
         # 2. equation of state and divergence constraint from the non-advective scalar rates
+        rho_n = self.rho
         self.rho, self.mu, self.Gam = self._props()
         self.rho0 = self.rho[:, g.fluid].min()
+        c.rho_now = self.rho
         phi = {s: g.phys(self.phis[s]) for s in c.scalars}
         dl = c.dlnrho(phi) if hasattr(c, 'dlnrho') else {}
         S = np.zeros_like(self.rho)
         for s, d in dl.items():
             S -= d * g.phys((self.phis[s] - old[s]) / dt + used[s])
+        # volume-discrepancy correction: drive the continuity density rho* = rho^n - dt div F towards the EOS density
+        if self.beta:
+            rho_star = rho_n - dt * (divF + self.rinv * g.dth(rho_n * self.Ut))
+            S += self.beta * (rho_star - self.rho) / (self.rho * dt)
+            self.mismatch = np.abs((rho_star - self.rho) / self.rho)[:, g.fluid].max()
         S[:, g.solid] = 0
         self.S = g.trunc(S)
         # 3. momentum predictor
@@ -315,7 +345,7 @@ class Solver:
         bcs_1 = c.vel_bc(t1)
         adv = np.empty_like(u)
         for k in range(3):
-            adv[k] = self._advect(u[k], self.us[k], bcs_n[k], divU)
+            adv[k] = self._advect(u[k], self.us[k], bcs_n[k], divF)
         adv[0] -= self.Ut * u[1] * self.rinv
         adv[1] += self.Ut * u[0] * self.rinv
         a_u = np.array([g.spec(adv[k]) for k in range(3)])

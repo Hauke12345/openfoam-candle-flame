@@ -125,7 +125,7 @@ def run(case_cls, M, V, t_end, hr, hz, restart=None, tag='stage2', t_on=-1.0, cf
     g = candle_grid(M, hr, hz)
     case = case_cls(g, V, t_on=t_on)
     print(f'{tag}: grid Nr={g.Nr} Nz={g.Nz} M={M} Nt={g.Nt} V={V}', flush=True)
-    sol = Solver(case, cfl=cfl, dt_max=2e-4)
+    sol = Solver(case, cfl=cfl, dt_max=2e-4, beta=float(os.environ.get('BETA', 0.0)))
     if restart:
         sol.load(restart)
         if V > 0 and case.t_on < sol.t:
@@ -139,16 +139,23 @@ def run(case_cls, M, V, t_end, hr, hz, restart=None, tag='stage2', t_on=-1.0, cf
         sol.set_state(case.initial_velocity(), case.initial_scalars())
     t0 = time.time()
     nxt = sol.t + every
+    snap = float(os.environ.get('SNAP', 0))          # snapshot interval (s) for animations, 0 = off
+    nsnap, next_snap = 0, sol.t + snap
     hist = []
     while sol.t < t_end - 1e-12:
         dt = sol.step()
         if not np.isfinite(sol.us).all():
             print('NaN at t', sol.t); break
+        if snap and sol.t >= next_snap - 1e-12:
+            os.makedirs(os.path.join(OUT, 'snap_' + tag), exist_ok=True)
+            sol.save(os.path.join(OUT, 'snap_' + tag, f'{nsnap:04d}.npz'))
+            nsnap += 1
+            next_snap += snap
         if sol.t >= nxt - 1e-12 or sol.t >= t_end - 1e-12:
             nxt += every
             info = extra(sol, case) if extra else {}
             hist.append(dict(t=sol.t, umax=float(np.abs(sol.us).max()), **info))
-            print(f't={sol.t:.4f} dt={dt:.2e} n={sol.n} div={sol.last_div:.1e} |u|max={np.abs(sol.us).sum(1).max():.3f} '
+            print(f't={sol.t:.4f} dt={dt:.2e} n={sol.n} div={sol.last_div:.1e} mis={sol.mismatch:.1e} |u|max={np.abs(sol.us).sum(1).max():.3f} '
                   f'{json.dumps(info)} wall={time.time() - t0:.0f}s', flush=True)
     sol.save(os.path.join(OUT, tag + '.npz'))
     return sol, case, hist
