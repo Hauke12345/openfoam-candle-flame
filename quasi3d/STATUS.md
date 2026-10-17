@@ -84,14 +84,17 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
   After 0.2 s of draft: M = 4 centroid (x 9.6, z 7.6) mm, tip (21, 20.5) — too flat, lying on the pool;
   M = 8 centroid (13.4, 12.6) mm, 63.8°, tip (35, 27.8) — centroid matches OpenFOAM (12.0, 12.0) mm, 63.4°; the tip
   point (highest point of the Zst surface) is a noisy measure. Mass mismatch −2.4e-4 (M8) / −4.2e-4 kg/s (M4).
-  M = 2 and M = 12 (convergence check) running. Without CLIP, M = 2 lost mass consistency badly.
+  M = 2 (CLIP): unusable — spurious Z source 4× the wick supply after 70 ms, then the time step collapsed.
+  M = 12 running (convergence check).
 
 ## Stage 4 — finite-rate chemistry (validator: m = 0 PASS; Tmax +1.4 %, tip −3.6 / +2.9 %; axis T +45 K above the flame, axis u_z 6–9 % low at 10–30 mm)
 - `chem.py` verified against Cantera (constant-pressure reactor). Strang splitting.
 - M = 0, refined grid, t = 0.3 s: tip 43.1 mm (5 % fuel-rate) / 46.0 mm (axis Zst) vs 44.7 ✓; Tmax 1950 vs
   1923 K (+1.4 %) ✓; steady.
-- Draft run: M = 8 (CLIP, snapshots every 5 ms for the movie), V = 0.2 m/s, 0.2 s of draft — running (~10 s/step).
-  M = 4 was dropped: M = 4 cannot hold the leaning flame (stage 3).
+- Draft run M = 8 (CLIP): FAILED physically after 30 ms — each species/hs rings independently in θ (Gibbs):
+  Y_O2 up to 0.28, Y_CO2 0.29, N2 (closure) 0.55, T up to 2574 K (> adiabatic 2281 K), 6416 cells < 280 K.
+  Per-scalar clipping cannot keep a 6-scalar composition realisable. Handed to numerics-expert (bounded θ
+  transport: modal filter / FV-TVD in θ on the collocation angles / realisability limiting). ~10 s/step at M = 8.
 
 ## Stage 5 — OpenFOAM half-3D reference
 - `of3d/gen3d.py`, `of3d/Allrun`, 119k cells, V = 0.2 m/s, started from the axisymmetric solution + draft
