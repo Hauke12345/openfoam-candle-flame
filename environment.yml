@@ -1,0 +1,13 @@
+# conda env create -f environment.yml && conda activate candle
+name: candle
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - openfoam=2412
+  - cantera=3.2
+  - numpy
+  - scipy
+  - matplotlib
+  - pillow
+  - ffmpeg

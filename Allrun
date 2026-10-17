@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Full pipeline: case -> OpenFOAM run -> plots -> Blender renders -> GIF/MP4.
+#   conda activate candle && ./Allrun
+# Options (environment variables):
+#   NP=8            cores for the OpenFOAM run (default 2)
+#   END_TIME=0.05   shorter simulated time for a quick test (default 0.5 s, steady from ~0.3 s)
+#   SKIP_BLENDER=1  stop after the OpenFOAM plots
+#   BPY_PYTHON=...  Python 3.13 interpreter with `pip install bpy==5.2.2` (default python3.13)
+#   BLENDER=...     use the Blender 5.2 app instead of the bpy module
+#   CANDLE_GPU=1    render on an NVIDIA GPU
+set -euo pipefail
+cd "$(dirname "$0")"; ROOT=$PWD
+source etc/env.sh
+NP=${NP:-2}
+
+# 1. generate and run the OpenFOAM case
+python gen.py case
+cd case
+cp -r 0.orig 0
+blockMesh > log.blockMesh
+topoSet > log.topoSet
+setFields > log.setFields
+foamDictionary -entry numberOfSubdomains -set "$NP" system/decomposeParDict > /dev/null
+[ -n "${END_TIME:-}" ] && foamDictionary -entry endTime -set "$END_TIME" system/controlDict > /dev/null
+if [ "$NP" -gt 1 ]; then
+    decomposePar -force > log.decomposePar
+    mpirun -np "$NP" rhoReactingBuoyantFoam -parallel > log.rhoReactingBuoyantFoam
+    reconstructPar > log.reconstructPar
+else
+    rhoReactingBuoyantFoam > log.rhoReactingBuoyantFoam
+fi
+postProcess -func writeCellCentres -time 0 > log.cellCentres
+cd "$ROOT"
+
+# 2. analysis plots and fields for rendering
+python post.py case out              # temperature/reaction-zone figure, ignition GIF, key numbers
+python render.py case out            # 2D line-of-sight render (no Blender needed)
+python export_fields.py case fields  # emission maps for Blender
+python gif_panels.py case gif        # physics breakdown panels
+[ -n "${SKIP_BLENDER:-}" ] && { echo "done (Blender skipped)"; exit 0; }
+
+# 3. Blender renders (CANDLE_GPU=1 for an NVIDIA GPU)
+if [ -n "${BLENDER:-}" ]; then run_b() { "$BLENDER" -b -P blender_scene.py -- "$@"; }
+else run_b() { "${BPY_PYTHON:-python3.13}" blender_scene.py "$@"; }; fi
+mkdir -p blend
+CROP=324,230,756,878
+run_b beauty 1080 1620 64 blend/candle_blender.png
+run_b soot   1080 1620 64 blend/pass_soot.png $CROP
+run_b chem   1080 1620 64 blend/pass_chem.png $CROP
+run_b anim   432  648  24 blend/anim 32
+
+# 4. GIF and MP4
+python make_gif.py $CROP out/candle_physics.gif
+python make_gif.py $CROP out/candle_physics.mp4
+echo "done: see out/ and blend/"
