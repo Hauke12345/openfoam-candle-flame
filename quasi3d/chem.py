@@ -145,11 +145,20 @@ def _integrate(Y5, T, dt, p, active, hi, lo, Wk, hf, A, Ta, ORD, NU, rtol, atolY
     return nsub
 
 
-def react(Y5, T, dt, p=mech.P0, rtol=1e-4, atolY=1e-8, atolT=1e-3, Tmin=500.0):
+def react(Y5, T, dt, p=mech.P0, rtol=1e-3, atolY=1e-8, atolT=1e-2, Tmin=500.0, dYmin=1e-7, dTmin=1e-2):
     """advance (5, N) mass fractions and (N,) temperature over dt at constant pressure; returns mean heat release."""
     Y5 = np.ascontiguousarray(Y5, float).copy()
     T = np.ascontiguousarray(T, float).copy()
     active = (T > Tmin) & (Y5[1] > 1e-7) & ((Y5[0] > 1e-9) | (Y5[2] > 1e-8) | (Y5[3] > 1e-6))
+    # skip points whose initial rates change nothing over dt (most of the plume): |dY| < dYmin, |dT| < dTmin
+    if active.any():
+        ia = np.nonzero(active)[0]
+        Yf = mech.full_Y(Y5[:, ia])
+        rho = mech.density(T[ia], Yf)
+        w, Q = mech.omega(T[ia], Yf, rho)
+        dY = np.abs(w[:5]).max(0) / rho * dt
+        dT = np.abs(Q) / (rho * mech.cp_mix(T[ia], Yf)) * dt
+        active[ia[(dY < dYmin) & (dT < dTmin)]] = False
     q = np.zeros_like(T)
     nsub = _integrate(Y5, T, dt, p, active, _HI, _LO, _W, _HF, _A, _TA, _ORD, _NU, rtol, atolY, atolT, q)
     return Y5, T, q, nsub

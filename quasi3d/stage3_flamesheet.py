@@ -11,7 +11,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mech
 from core import BC, OUTER, OPEN, TOP, WICK
-from candle import CandleBase, candle_grid, Reference, SP5, ZST, Z_W, tip_height
+from candle import CandleBase, candle_grid, Reference, SP5, ZST, Z_W, tip_height, Y_AIR5
 from stage2_plume import run
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out')
@@ -82,6 +82,19 @@ def state_table(nbin=400):
     zf = np.r_[np.linspace(0, 0.2, 2001), np.linspace(0.2, 1, 801)[1:]]
     Tf = np.interp(zf, tab['Z'], tab['T'])
     Yf = mech.full_Y(np.array([np.interp(zf, tab['Z'], tab[s]) for s in SP5]))
+    # lean end: adiabatic mixing line between air and the state at Z1 (Y and hs linear in Z). The conditional means
+    # are very steep near Z = 0 (heat diffuses further than fuel in OpenFOAM, alpha > rho D), which makes 1/rho(Z)
+    # strongly curved there and breaks the face-density consistency once the draft sweeps the lean plume.
+    Z1 = float(os.environ.get('LEAN_Z1', 0.02))
+    if Z1 > 0:
+        lean = zf < Z1
+        j1 = np.searchsorted(zf, Z1)
+        Yair = mech.full_Y(np.array(Y_AIR5)[:, None])[:, 0]
+        w = zf[lean] / zf[j1]
+        Yf[:, lean] = Yair[:, None] + (Yf[:, j1:j1 + 1] - Yair[:, None]) * w
+        h_air = float(mech.hs_mix(np.array(300.0), Yair))
+        h1 = float(mech.hs_mix(Tf[j1:j1 + 1], Yf[:, j1:j1 + 1])[0])
+        Tf[lean] = mech.T_from_hs(h_air + (h1 - h_air) * w, Yf[:, lean])
     rho = mech.density(Tf, Yf)
     mu = mech.transport(Tf, Yf)[0]
     return dict(Z=zf, T=Tf, Y=Yf, rho=rho, mu=mu, dlnrho=np.gradient(rho, zf) / rho, raw=tab)
