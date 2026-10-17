@@ -136,5 +136,39 @@ def stage3():
     print('wrote figs/stage3_lean.png')
 
 
+
+def stage5(ours=None, of_time='0.3'):
+    """temperature in the plane of the draft (y = 0): OpenFOAM half-3D vs the quasi-3D stage-4 run"""
+    sys.path.insert(0, os.path.dirname(HERE))
+    from foamio import read_field
+    from matplotlib.tri import Triangulation
+    case = os.path.join(HERE, 'of3d', 'case')
+    C = read_field(f'{case}/0/C'); T = read_field(f'{case}/{of_time}/T')
+    rr = np.hypot(C[:, 0], C[:, 1])
+    sel = (np.degrees(np.arctan2(C[:, 1], np.abs(C[:, 0]))) < 3.5) | (rr < 0.5e-3)   # cells next to the symmetry plane
+    fig, axs = plt.subplots(1, 2, figsize=(9, 6.2), sharey=True)
+    kw = dict(cmap='inferno', vmin=300, vmax=2100)
+    tri = Triangulation(C[sel, 0] * 1e3, C[sel, 2] * 1e3)
+    axs[0].tricontourf(tri, T[sel], levels=40, **kw)
+    axs[0].set_title(f'OpenFOAM half-3D, t = {of_time} s', fontsize=10)
+    if ours is None:
+        cands = sorted(glob.glob(os.path.join(OUT, 'stage4_M4_V0.2_h0.375_fv*.npz')))
+        ours = cands[-1]
+    from stage4_chemistry import Chemistry
+    g, cs, sol = load_case(ours, Chemistry, V=0.2)
+    F = sol.fields()
+    Tq, _ = cs.state({s: F[s] for s in cs.scalars})
+    x, Ts = slice_xz(g, Tq)
+    pc = axs[1].pcolormesh(x * 1e3, g.zc * 1e3, Ts, shading='auto', **kw)
+    axs[1].set_title(f'quasi-3D stage 4, M = {g.M}, t = {float(sol.t):.3f} s', fontsize=10)
+    for ax in axs:
+        ax.set_xlim(-15, 38); ax.set_ylim(0, 80); ax.set_aspect('equal'); ax.set_xlabel('x (mm), draft 0.2 m/s →')
+        ax.add_patch(plt.Rectangle((-0.75, 0), 1.5, 6, color='0.4'))
+    axs[0].set_ylabel('z (mm)')
+    plt.colorbar(pc, ax=axs, shrink=0.7, label='T (K)')
+    fig.savefig(os.path.join(FIG, 'stage5_compare.png'), dpi=120, bbox_inches='tight')
+    print('wrote figs/stage5_compare.png', ours)
+
+
 if __name__ == '__main__':
     globals()[sys.argv[1]]()
