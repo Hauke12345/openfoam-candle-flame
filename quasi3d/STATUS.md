@@ -67,34 +67,45 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
 4. Draft blow-up (numerics-expert): truncating ρ = ρ_EOS(Z) to M modes went negative when the draft bends the sheet
    (ρ(Z) very nonlinear) → ρ0 → 0. Fix: pointwise EOS density; dlnρ/dZ = 0 outside [0, 1]; smoothed rich-side
    state table (raw conditional means were non-monotone).
-5. Remaining limitation: a leaning flame/plume is an off-axis blob that 4–8 Fourier modes cannot represent; Gibbs
-   ringing of Z in θ near Z ≈ 0 (where 1/ρ changes by ~100 per unit Z) changes ρ_EOS without a matching volume
-   source → global mass mismatch ~ −3e-4 kg/s (≈ 15 % of the draft through-flow) at M = 4, less at M = 8. Optional
-   clipping of bounded scalars at the collocation angles (`CLIP=1`) reduces it ≈ 3×. Probably weakens the plume
-   (max |u| 0.85 m/s at 0.1 s of draft vs OpenFOAM 1.63).
+5. Gibbs ringing in θ (numerics-expert, then finished by the coordinator): a leaning flame/plume is an off-axis
+   structure that M = 4–8 modes cannot represent; pseudo-spectral θ advection rings. One scalar (Z) with clipping
+   still gave a mass mismatch ~ −2.5e-4 kg/s; six scalars (stage 4) became unrealisable (Y_O2 0.28, T 2574 K).
+   Fix: THETA_FV=1 — scalars live at the N_θ collocation angles (stored as all N_θ/2+1 modes, i.e. exactly) and are
+   advected in θ with conservative MUSCL/van Leer face fluxes; the θ face velocities are chosen such that the FV θ
+   divergence equals the spectral divergence at every collocation angle (factor (mΔθ/2)/sin(mΔθ/2)·e^{imΔθ/2} per
+   mode), so the scalars see exactly the divergence the projection enforces. Velocity and pressure stay spectral
+   (M modes). Result: bounded scalars, mass mismatch ≈ −2e-5 kg/s (10× lower), stage-4 draft physical. Stage 1 is
+   unchanged with and without it. Use THETA_FV=1 for all draft runs.
 - OpenFOAM uses ρD = μ for species (fit of OpenFOAM's own steady Z equation: 0.993 μ vs 0.72 μ for κ/c_p), so
   stage 3 uses Sc = 1 (the plan's ρD = μ/0.7 gives a 31 mm tip).
 - Chemistry: points whose initial rates change nothing over Δt are skipped, rtol 1e-3 (≈5 s/step at M = 4).
 
 ## Stage 3 — flame sheet (validator: m = 0 tip PASS, 46.8 / 45.6 mm mean; Sc = 1 justified, ρD = 0.99–1.02 μ)
-- M = 0 (refined grid, new fluxes): flickers at ≈ 11 Hz, mean tip 45.6–46.8 mm (OpenFOAM 44.7) ✓ ±10 %.
-- Draft V = 0.2 m/s (started by superposing V e_x on the M = 0 state), CLIP=1: the flame lays over strongly —
-  physically: OpenFOAM half-3D shows the same (see stage 5). After 0.1 s of draft, M = 4: tip (z 31, x 20.5) mm,
-  centroid (x 9.6, z 12.8) mm, 55°; OpenFOAM at 0.1 s: tip (27.3, 15.3), centroid (10.6, 13.4), 55°.
-  After 0.2 s of draft: M = 4 centroid (x 9.6, z 7.6) mm, tip (21, 20.5) — too flat, lying on the pool;
-  M = 8 centroid (13.4, 12.6) mm, 63.8°, tip (35, 27.8) — centroid matches OpenFOAM (12.0, 12.0) mm, 63.4°; the tip
-  point (highest point of the Zst surface) is a noisy measure. Mass mismatch −2.4e-4 (M8) / −4.2e-4 kg/s (M4).
-  M = 2 (CLIP): unusable — spurious Z source 4× the wick supply after 70 ms, then the time step collapsed.
-  M = 12 running (convergence check).
+- M = 0 (refined grid): flickers at ≈ 11 Hz, mean tip 45.6–46.8 mm (OpenFOAM 44.7) ✓ ±10 %.
+- Draft V = 0.2 m/s, 0.2 s (started by superposing V e_x on the M = 0 state). The flame lays over ~60° — physical,
+  OpenFOAM half-3D shows the same. Mean ± sd over the last 50 ms (`out/stage3_lean_summary.json`, `figs/stage3_lean.png`):
+
+  | run | centroid x (mm) | centroid z (mm) | tip z | tip x | mass mismatch (kg/s) |
+  |---|---|---|---|---|---|
+  | THETA_FV M = 2 | 4.7 ± 0.7 | 13.3 ± 5.5 | 26.8 ± 8.6 | 3.7 ± 0.7 | −2.6e-5 |
+  | THETA_FV M = 4 | 12.3 ± 0.2 | 9.3 ± 0.4 | 22.6 ± 1.7 | 23.8 ± 1.2 | −2.0e-5 |
+  | THETA_FV M = 8 | 11.9 ± 0.4 | 10.1 ± 0.8 | 29.4 ± 3.3 | 23.8 ± 1.2 | −2.1e-5 |
+  | spectral+clip M = 8 | 12.6 ± 0.5 | 12.7 ± 0.1 | 34.4 ± 0.8 | 25.9 ± 1.3 | −2.9e-4 |
+  | spectral+clip M = 12 | 12.5 ± 0.3 | 11.8 ± 0.7 | 32.6 ± 2.8 | 25.5 ± 1.0 | −2.8e-4 |
+  | OpenFOAM half-3D (0.2–0.3 s) | 12.0–12.5 | 12.0–12.4 | 23–24 | 20.1 | – |
+
+  Verdict: the lean converges from M = 4 to M = 8 (centroid within 0.4 / 0.8 mm) and its downstream offset matches
+  OpenFOAM; the THETA_FV flame sits 2–3 mm lower. **M = 2 does not converge**: two velocity modes cannot carry the
+  flame off-axis (honest limitation; the plan's criterion "converges for M = 2/4/8" holds only for 4 → 8).
 
 ## Stage 4 — finite-rate chemistry (validator: m = 0 PASS; Tmax +1.4 %, tip −3.6 / +2.9 %; axis T +45 K above the flame, axis u_z 6–9 % low at 10–30 mm)
 - `chem.py` verified against Cantera (constant-pressure reactor). Strang splitting.
 - M = 0, refined grid, t = 0.3 s: tip 43.1 mm (5 % fuel-rate) / 46.0 mm (axis Zst) vs 44.7 ✓; Tmax 1950 vs
   1923 K (+1.4 %) ✓; steady.
-- Draft run M = 8 (CLIP): FAILED physically after 30 ms — each species/hs rings independently in θ (Gibbs):
-  Y_O2 up to 0.28, Y_CO2 0.29, N2 (closure) 0.55, T up to 2574 K (> adiabatic 2281 K), 6416 cells < 280 K.
-  Per-scalar clipping cannot keep a 6-scalar composition realisable. Handed to numerics-expert (bounded θ
-  transport: modal filter / FV-TVD in θ on the collocation angles / realisability limiting). ~10 s/step at M = 8.
+- Draft, pseudo-spectral + CLIP (M = 8): unphysical after 30 ms (species Gibbs: Y_O2 0.28, T 2574 K) — abandoned.
+- Draft with THETA_FV: physical (Tmax ≈ 2090 K vs OpenFOAM 3D 2060 K); M = 4 and M = 8 agree at 30 ms of draft
+  (centroid x 5.2 / 5.4 mm). Full 0.2 s runs (`_fv3`, snapshots every 5 ms) running: M = 4 ≈ 85 s per ms,
+  M = 8 ≈ 2× that.
 
 ## Stage 5 — OpenFOAM half-3D reference
 - `of3d/gen3d.py`, `of3d/Allrun`, 119k cells, V = 0.2 m/s, started from the axisymmetric solution + draft

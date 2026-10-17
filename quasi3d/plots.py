@@ -115,5 +115,26 @@ def stage2():
     print('wrote figs/stage2_plume.png')
 
 
+
+def stage3():
+    """lean vs number of modes (time-averaged over the last 50 ms) against the OpenFOAM half-3D reference"""
+    rows = json.load(open(os.path.join(OUT, 'stage3_lean_summary.json')))
+    fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+    for ax, k, lab, ref in ((axs[0], 'cen_x_mm', 'flame centroid x (downstream, mm)', (12.0, 12.5)),
+                            (axs[1], 'cen_z_mm', 'flame centroid z (mm)', (12.0, 12.4))):
+        for scheme, mk in (('FV', 'o-'), ('clip', 's--')):
+            r = [x for x in rows if x['case'].startswith(scheme)]
+            Ms = [int(x['case'].split('=')[1]) for x in r]
+            ax.errorbar(Ms, [x[k][0] for x in r], yerr=[x[k][1] for x in r], fmt=mk, capsize=3,
+                        label='θ finite volume (THETA_FV)' if scheme == 'FV' else 'pseudo-spectral + clip')
+        ax.axhspan(*ref, color='0.8', label='OpenFOAM half-3D (0.2–0.3 s)')
+        ax.set_xlabel('M (azimuthal modes)'); ax.set_ylabel(lab); ax.set_xticks([2, 4, 8, 12])
+    axs[0].legend(fontsize=8)
+    fig.suptitle('Stage 3: flame-sheet lean in a 0.2 m/s draft (mean ± sd over the last 50 ms of 0.2 s)', fontsize=10)
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG, 'stage3_lean.png'), dpi=120)
+    print('wrote figs/stage3_lean.png')
+
+
 if __name__ == '__main__':
     globals()[sys.argv[1]]()
