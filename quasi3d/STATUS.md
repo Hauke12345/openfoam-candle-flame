@@ -58,33 +58,47 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
 
 ## Solver history (important)
 1. ρu-projection with ∂ρ/∂t from EOS differencing: unstable for the flame sheet (growth ∝ 1/Δt).
-2. → velocity projection, div u = S from the non-advective scalar rates, Dodd–Ferrante (current).
-3. Fuel-element mass flow above the wick: 1.39e-6 kg/s vs OpenFOAM 1.79e-6 (supply 1.667e-6 + diffusion) with the
-   volume-flux advective form → tips ≈ 38 mm (stage 3 and 4) vs 44.7. Mass-flux advective form: 2.3e-6 (too much);
-   + volume-discrepancy correction β = 0.5: runaway. Handed to numerics-expert (in progress).
-- OpenFOAM uses ρD = μ for species: fitting OpenFOAM's own steady Z equation gives ρD = 0.993 μ (vs 0.72 μ for
-  κ/c_p). Stage 3 therefore uses Sc = 1 (the plan's ρD = μ/0.7 gives a 31 mm tip, i.e. 0.7 × 44 mm as expected).
+2. → velocity projection, div u = S from the non-advective scalar rates, Dodd–Ferrante.
+3. Fuel-element conservation (numerics-expert): S from the chain rule assumes ρ is advected consistently with Z;
+   upwind-cell face densities violate that by up to 3× in the dense vapour layer (±30 % spurious fuel source).
+   Fix: face mass fluxes F = ρ_EOS(φ_face)·U, wick velocity ṁ''/ρ_w; grid refined to 0.1875 mm for r < 4.5 mm,
+   z < 9 mm (`WICK_H=0.1875 WICK_RF=4.5`, 50 × 182 cells). Z budget closes to 1.5 %. Keep β (volume-discrepancy
+   correction) = 0: with ρ reset to the EOS every step it recreates the mismatch.
+4. Draft blow-up (numerics-expert): truncating ρ = ρ_EOS(Z) to M modes went negative when the draft bends the sheet
+   (ρ(Z) very nonlinear) → ρ0 → 0. Fix: pointwise EOS density; dlnρ/dZ = 0 outside [0, 1]; smoothed rich-side
+   state table (raw conditional means were non-monotone).
+5. Remaining limitation: a leaning flame/plume is an off-axis blob that 4–8 Fourier modes cannot represent; Gibbs
+   ringing of Z in θ near Z ≈ 0 (where 1/ρ changes by ~100 per unit Z) changes ρ_EOS without a matching volume
+   source → global mass mismatch ~ −3e-4 kg/s (≈ 15 % of the draft through-flow) at M = 4, less at M = 8. Optional
+   clipping of bounded scalars at the collocation angles (`CLIP=1`) reduces it ≈ 3×. Probably weakens the plume
+   (max |u| 0.85 m/s at 0.1 s of draft vs OpenFOAM 1.63).
+- OpenFOAM uses ρD = μ for species (fit of OpenFOAM's own steady Z equation: 0.993 μ vs 0.72 μ for κ/c_p), so
+  stage 3 uses Sc = 1 (the plan's ρD = μ/0.7 gives a 31 mm tip).
+- Chemistry: points whose initial rates change nothing over Δt are skipped, rtol 1e-3 (≈5 s/step at M = 4).
 
-## Stage 3 — flame sheet: FAIL so far (tip), pending the conservation fix
-- Z with conditional-mean state relations from the npz; M = 0, Sc = 1: the flame flickers at ≈11 Hz, tip 36–43 mm,
-  mean ≈ 39 mm (−12 %); same on a 0.25 mm grid and with CFL 0.2. Sc = 0.7: ≈ 31 mm.
+## Stage 3 — flame sheet
+- M = 0 (refined grid, new fluxes): flickers at ≈ 11 Hz, mean tip 45.6–46.8 mm (OpenFOAM 44.7) ✓ ±10 %.
+- Draft V = 0.2 m/s (started by superposing V e_x on the M = 0 state), CLIP=1: the flame lays over strongly —
+  physically: OpenFOAM half-3D shows the same (see stage 5). After 0.1 s of draft, M = 4: tip (z 31, x 20.5) mm,
+  centroid (x 9.6, z 12.8) mm, 55°; OpenFOAM at 0.1 s: tip (27.3, 15.3), centroid (10.6, 13.4), 55°.
+  M = 8 tracks M = 4 (20.6° vs 20.9° at 10 ms, 42.6° vs 51.4° at 40 ms). Runs to 0.2 s of draft in progress; M = 2
+  (CLIP) queued. Without CLIP, M = 2 lost mass consistency badly (mismatch −5e-4 kg/s).
 
-## Stage 4 — finite-rate chemistry: implemented, m = 0 tip short (same cause as stage 3)
-- `chem.py`: per-point constant-pressure reactor, adaptive ROS2 with FD Jacobian (numba, parallel); matches a
-  Cantera IdealGasConstPressureReactor with the same mechanism (T 1923 vs 1921 K mid-ignition, identical final
-  state). Strang splitting.
-- M = 0 from the OpenFOAM state, t = 0.3 s: steady (no flicker); Tmax 1959 K (+1.8 % ✓), tip 38.5 mm (axis Zst) /
-  35.8 mm (5 % fuel-rate) vs 44.7 (✗) — due to the fuel-flux loss above.
+## Stage 4 — finite-rate chemistry
+- `chem.py` verified against Cantera (constant-pressure reactor). Strang splitting.
+- M = 0, refined grid, t = 0.3 s: tip 43.1 mm (5 % fuel-rate) / 46.0 mm (axis Zst) vs 44.7 ✓; Tmax 1950 vs
+  1923 K (+1.4 %) ✓; steady.
+- Draft run M = 4 (CLIP, snapshots every 5 ms for the movie) queued after the OpenFOAM run.
 
-## Stage 5 — OpenFOAM half-3D reference: running
-- `of3d/gen3d.py` + `of3d/Allrun` (OpenFOAM v2412 via micromamba at /opt/mm/root/envs/of; activate with
-  `export CONDA_PREFIX=/opt/mm/root/envs/of PATH=$CONDA_PREFIX/bin:$PATH; source etc/env.sh`).
-  Half cylinder with symmetryPlane y = 0, O-grid, 119k cells (checkMesh OK, max non-orth 21°), uniform draft
-  V = 0.2 m/s on outer/open, initialised from the axisymmetric solution + draft, no igniter.
-  Started with NP = 2 (dt ≈ 2.7e-5, ≈2 h for 0.3 s). Installing micromamba: only conda.anaconda.org is reachable;
-  get `micromamba-2.9.0-0.tar.bz2` from conda-forge/linux-64 directly.
+## Stage 5 — OpenFOAM half-3D reference
+- `of3d/gen3d.py`, `of3d/Allrun`, 119k cells, V = 0.2 m/s, started from the axisymmetric solution + draft
+  (OpenFOAM via micromamba at /opt/mm/root/envs/of; `export CONDA_PREFIX=/opt/mm/root/envs/of
+  PATH=$CONDA_PREFIX/bin:$PATH; source etc/env.sh`). `tools/of3d_flame.py CASE times` → flame geometry.
+- Lean (Z ≥ Zst region): t = 0.05 s tip (36.1, 9.5) mm, centroid 39°; 0.1 s tip (27.3, 15.3), 55°;
+  0.2 s tip (24.0, 20.1) mm, centroid (12.5, 12.4) mm, 63° (steady from ≈ 0.2 s); Tmax 2059 K; max |u| 2.18 →
+  1.63 (0.12 s) → 1.95 m/s (0.24 s, at x = 37 mm, z = 83 mm: the leaning plume reaches the outer boundary).
 
-## Stage 6 — render: renderer being written (`render3d.py`); snapshots via `SNAP=<s>` env in the drivers.
+## Stage 6 — render: `render3d.py` (line-of-sight soot proxy + chemiluminescence, MP4 via system ffmpeg), tested.
 
 ## Next
 Conservation fix → re-validate stage 3 (tip, M = 2/4/8 lean) and stage 4 (m = 0) → stage 4 draft runs → compare with
