@@ -46,7 +46,7 @@ draft; top outflow. Start from rest, V = 0.2 m/s ramped over 50 ms.
   −τ_θθ/r in the explicit viscous remainder has an O(1) error there (L2 still converges).
 - Lesson: switch the draft on by superposing V e_x on the axisymmetric state, not from rest.
 
-## Stage 2 — hot buoyant plume: m = 0 PASS; draft run to redo
+## Stage 2 — hot buoyant plume: m = 0 PASS (validator: PASS, u_z max dev 3.2 %, free-plume T within 0.4 %); draft run to redo
 Frozen chemistry (h_s + 5 species, full thermo/transport, optically thin radiation); inside the OpenFOAM flame
 envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFOAM values; velocity is free.
 - M = 0 (grid 0.375 × 0.5 mm near the flame, 37 × 150 cells, t = 0.4 s from the OpenFOAM state):
@@ -76,7 +76,7 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
   stage 3 uses Sc = 1 (the plan's ρD = μ/0.7 gives a 31 mm tip).
 - Chemistry: points whose initial rates change nothing over Δt are skipped, rtol 1e-3 (≈5 s/step at M = 4).
 
-## Stage 3 — flame sheet
+## Stage 3 — flame sheet (validator: m = 0 tip PASS, 46.8 / 45.6 mm mean; Sc = 1 justified, ρD = 0.99–1.02 μ)
 - M = 0 (refined grid, new fluxes): flickers at ≈ 11 Hz, mean tip 45.6–46.8 mm (OpenFOAM 44.7) ✓ ±10 %.
 - Draft V = 0.2 m/s (started by superposing V e_x on the M = 0 state), CLIP=1: the flame lays over strongly —
   physically: OpenFOAM half-3D shows the same (see stage 5). After 0.1 s of draft, M = 4: tip (z 31, x 20.5) mm,
@@ -86,7 +86,7 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
   point (highest point of the Zst surface) is a noisy measure. Mass mismatch −2.4e-4 (M8) / −4.2e-4 kg/s (M4).
   M = 2 and M = 12 (convergence check) running. Without CLIP, M = 2 lost mass consistency badly.
 
-## Stage 4 — finite-rate chemistry
+## Stage 4 — finite-rate chemistry (validator: m = 0 PASS; Tmax +1.4 %, tip −3.6 / +2.9 %; axis T +45 K above the flame, axis u_z 6–9 % low at 10–30 mm)
 - `chem.py` verified against Cantera (constant-pressure reactor). Strang splitting.
 - M = 0, refined grid, t = 0.3 s: tip 43.1 mm (5 % fuel-rate) / 46.0 mm (axis Zst) vs 44.7 ✓; Tmax 1950 vs
   1923 K (+1.4 %) ✓; steady.
