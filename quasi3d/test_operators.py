@@ -5,7 +5,8 @@ Checks (grid without wick, Dirichlet exact values on OUTER/OPEN/TOP, axis via pa
   2. Solver._taudiv       div tau, tau = mu (grad u + grad u^T) - 2/3 mu (div u) I   (r, theta, z components)
   3. Solver._advect       u . grad phi  (MUSCL, exact face fluxes)
   4. Grid.lap_matrix      A phi_m + B b_m  vs  L_m phi_m, m = 0, 1, 2
-Errors are relative to max|exact|; 'int' excludes the outermost cell layer at OUTER/TOP/bottom (axis cells kept).
+Errors are relative to max|exact|; 'int' excludes 2 cell layers at OUTER/TOP/bottom (axis cells kept); 'axis' = 3 cells next to the axis.
+NOTE: manufactured fields are limited to azimuthal content such that all products have m <= M=4 (see below).
 Run with cwd quasi3d:  python3 test_operators.py
 """
 import time
@@ -74,15 +75,16 @@ def setup(N):
 
 
 def errs(g, num, ex):
-    """(max_all, L2_all, max_int, L2_int) relative to max|ex|; L2 volume weighted (r dr dz)."""
+    """Relative errors err/max|ex|: (max_all, L2_all, max_int, L2_int, max_axis).
+    L2 is volume weighted (r dr dz). 'int' excludes 2 cell layers at OUTER/TOP/bottom (axis cells kept);
+    'axis' = max over the 3 cells next to the axis (same z range)."""
     e = (num - ex)
     sc = np.abs(ex).max()
     w = np.broadcast_to(g.vol, e.shape)
-    msk = np.zeros(e.shape, bool); msk[:, 1:-1, :-1] = True; msk[:, 0] = False
-    msk[:, :, -1] = False
+    msk = np.zeros(e.shape, bool); msk[:, 2:-2, :-2] = True
+    ax = np.zeros(e.shape, bool); ax[:, 2:-2, :3] = True
     l2 = lambda m: np.sqrt((w[m] * e[m] ** 2).sum() / w[m].sum()) / sc
-    allm = np.ones(e.shape, bool)
-    return np.abs(e).max() / sc, l2(allm), np.abs(e[msk]).max() / sc, l2(msk)
+    return np.abs(e).max() / sc, l2(np.ones(e.shape, bool)), np.abs(e[msk]).max() / sc, l2(msk), np.abs(e[ax]).max() / sc
 
 
 def run_all(N):
@@ -122,9 +124,10 @@ def run_all(N):
         # complex modes: real & imag both compared (m=0 real)
         e = v - ls[m]; sc = np.abs(ls[m]).max()
         w = g.vol
-        msk = np.zeros(e.shape, bool); msk[1:-1, :-1] = True
+        msk = np.zeros(e.shape, bool); msk[2:-2, :-2] = True
+        ax = np.zeros(e.shape, bool); ax[2:-2, :3] = True
         l2 = lambda mk: np.sqrt((w[mk] * abs(e[mk]) ** 2).sum() / w[mk].sum()) / sc
-        res.append((abs(e).max() / sc, l2(np.ones(e.shape, bool)), abs(e[msk]).max() / sc, l2(msk)))
+        res.append((abs(e).max() / sc, l2(np.ones(e.shape, bool)), abs(e[msk]).max() / sc, l2(msk), abs(e[ax]).max() / sc))
     out['lap_m'] = res
     return out
 
@@ -132,18 +135,18 @@ def run_all(N):
 def main():
     t0 = time.time()
     R_ = {N: run_all(N) for N in NS}
-    names = ['max_all', 'L2_all', 'max_int', 'L2_int']
+    names = ['max_all', 'L2_all', 'max_int', 'L2_int', 'max_axis']
     labels = {'diffuse': ['diffuse'], 'taudiv': ['taudiv r', 'taudiv th', 'taudiv z'], 'advect': ['advect'],
               'lap_m': ['lap m=0', 'lap m=1', 'lap m=2']}
     print('relative errors (err/max|exact|); order = log2(e_N / e_2N)\n')
     for key, labs in labels.items():
         for k, lab in enumerate(labs):
-            print(f'{lab:10s} ' + ''.join(f'{n:>22s}' for n in names))
+            print(f'{lab:10s} ' + ''.join(f'{n:>14s}' for n in names))
             for N in NS:
-                print(f'  N={N:<4d}  ' + ''.join(f'{v:22.3e}' for v in R_[N][key][k]))
+                print(f'  N={N:<4d}  ' + ''.join(f'{v:14.3e}' for v in R_[N][key][k]))
             for a, b in zip(NS[:-1], NS[1:]):
                 o = [np.log2(p / q) for p, q in zip(R_[a][key][k], R_[b][key][k])]
-                print(f'  ord {a}->{b} ' + ''.join(f'{v:22.2f}' for v in o))
+                print(f'  ord {a}->{b} ' + ''.join(f'{v:14.2f}' for v in o))
     print(f'\nruntime {time.time() - t0:.1f} s')
 
 
