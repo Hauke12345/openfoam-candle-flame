@@ -34,7 +34,11 @@ class Chemistry(Thermo):
         phi['hs'] = hs
         for k, s in enumerate(SP5):
             phi[s] = Y5n[k].reshape(shp)
-        self.qdot = q.reshape(shp)
+        # heat release averaged over the two Strang half-steps of the last time step
+        qh = getattr(self, '_q_half', [])
+        qh = (qh + [q.reshape(shp)])[-2:]
+        self._q_half = qh
+        self.qdot = sum(qh) / len(qh)
         self.nsub = int(nsub.max())
         return phi
 
@@ -53,7 +57,7 @@ def diagnostics(sol, case):
     vol = np.broadcast_to(g.vol, T.shape) * 2 * np.pi / g.Nt
     info = dict(Tmax=float(T[fl].max()), tip_rr_mm=float(burning.max() * 1e3),
                 tip_axis_mm=float(tip_height(g, Z) * 1e3), Qsnap_W=float((Q * vol)[fl].sum()))
-    if getattr(case, 'qdot', None) is not None:      # heat release averaged over the last chemistry sub-step
+    if getattr(case, 'qdot', None) is not None:      # heat release averaged over both Strang half-steps
         info['Qchem_W'] = float((case.qdot * vol)[fl].sum())
     info.update({k: v for k, v in flame_geometry(g, Z).items() if k in ('tip_z_mm', 'tip_x_mm', 'tip_angle', 'cen_angle', 'cen_x_mm')})
     return {k: round(v, 3) for k, v in info.items()}

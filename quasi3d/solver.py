@@ -511,6 +511,7 @@ class Solver:
     def save(self, path, **extra):
         g = self.g
         np.savez_compressed(path, t=self.t, rf=g.rf, zf=g.zf, M=g.M, us=self.us, ps=self.ps, ps_old=self.ps_old,
+                            Urs=g.spec(self.Ur), Uzs=g.spec(self.Uz), Uts=g.spec(self.Ut), Ss=g.spec(self.S),
                             phis=np.array([self.phis[s] for s in self.c.scalars]),
                             scalars=np.array(self.c.scalars), **extra)
 
@@ -533,3 +534,9 @@ class Solver:
             phi[s] = g.phys(fs)
         self.set_state(u, phi, float(d['t']))
         self.ps, self.ps_old = ps, pso
+        if 'Urs' in d and int(d['M']) == g.M:
+            # restore the saved (projected with the true S) velocity and fluxes instead of the S = 0 re-projection
+            us = np.zeros_like(self.us); us[:, :M + 1] = d['us'][:, :M + 1]
+            self.us = us
+            self.Ur, self.Uz, self.Ut = g.phys(d['Urs']), g.phys(d['Uzs']), g.phys(d['Uts'])
+            self.S = g.phys(d['Ss'])
