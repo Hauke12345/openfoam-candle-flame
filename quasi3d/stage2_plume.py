@@ -53,6 +53,18 @@ class Thermo(CandleBase):
             Gam[s] = mu
         return rho, mu, Gam
 
+    def dlnrho(self, phi):
+        """rho = p W/(R T(hs, Y)): (1/rho) d rho/d hs = -1/(cp T); (1/rho) d rho/d Y_k (N2 = 1 - sum) =
+        -W (1/W_k - 1/W_N2) + (hs_k - hs_N2)/(cp T), evaluated at the state of the last props() call."""
+        T, Y = self.T, self.Y
+        cp = mech.cp_mix(T, Y)
+        Wm = mech.wmix(Y)
+        hk = mech.hs_k(T)
+        out = {'hs': -1.0 / (cp * T)}
+        for k, s in enumerate(SP5):
+            out[s] = -Wm * (1 / mech.W[k] - 1 / mech.W[5]) + (hk[k] - hk[5]) / (cp * T)
+        return out
+
     def initial_scalars(self):
         g, ref = self.g, self.ref
         T = ref.on_grid(g, 'T')
@@ -64,8 +76,8 @@ class Thermo(CandleBase):
         return phi
 
     def source(self, phi, rho, dt, t):
-        T, Y = self.state(phi)
-        phi['hs'] = phi['hs'] + dt * mech.q_rad_thin(T, Y) / rho
+        # radiation with the lagged temperature/composition (slow process)
+        phi['hs'] = phi['hs'] + dt * mech.q_rad_thin(self.T, self.Y) / rho
         return phi
 
 

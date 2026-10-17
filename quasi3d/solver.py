@@ -1,4 +1,14 @@
-"""Quasi-3D low-Mach time stepper (see core.py for the discretisation)."""
+"""Quasi-3D low-Mach time stepper (see core.py for the discretisation).
+
+Variable-density projection with a divergence constraint (velocity projection, Dodd & Ferrante splitting):
+  1. scalars  phi^{n+1}:  Dphi/Dt = (div(Gam grad phi) + S_phi)/rho, advection with the face volume fluxes U^n
+  2. rho^{n+1} = EOS(phi^{n+1});  S = div u = -(1/rho) Drho/Dt = -sum_s (1/rho) d rho/d phi_s * R_s, where R_s is the
+     non-advective rate of phi_s (diffusion + sources). Advection does not enter S, which removes the feedback
+     "d rho/dt from the EOS -> divergence -> advection -> rho" that makes EOS-differenced d rho/dt unstable.
+  3. momentum: u* = u^n + dt [-(u.grad)u + (div tau + (rho - rho_inf) g)/rho - G(p^n, p_hat)], implicit nu0 part.
+     G(p, p_hat) = grad p / rho0 + (1/rho - 1/rho0) grad p_hat,  p_hat = 2 p^n - p^{n-1}  (Dodd & Ferrante 2014)
+  4. projection: L_m dp = rho0 (div U* - S)/dt (constant coefficient per mode),  U^{n+1} = U* - dt grad dp / rho0.
+"""
 import time
 import numpy as np
 from core import (faces, interp_faces, div_faces, muscl_faces, Factor, csolve, BC,
@@ -11,10 +21,10 @@ P_BC_LABELS = {TOP}
 class Solver:
     """case must provide:
         g (Grid), rho_inf, scalars: list of names, scalar_bc: dict name -> BC,
-        vel_bc(t) -> (BC u_r, BC u_theta, BC u_z) with physical face values,
-        bnd_mflux(t, rho) -> (Fr, Fz) physical face arrays, used on OUTER/OPEN/POOL/WICK faces,
+        vel_bc(t) -> (BC u_r, BC u_theta, BC u_z) with physical face values (also the boundary volume fluxes),
         props(phi) -> (rho, mu, Gam) physical (phi: dict of physical scalar fields; Gam an array or a dict per scalar),
-        optional source(phi, rho, dt) -> phi (split stiff sources), optional fix(phis) (spectral constraints)."""
+        dlnrho(phi) -> dict s -> (1/rho) d rho / d phi_s (physical), only for scalars that affect rho,
+        optional source(phi, rho, dt, t) -> phi (split stiff sources), optional fix(phis, t) (spectral constraints)."""
 
     def __init__(self, case, cfl=0.4, dt_max=2e-4, r_theta_min=None, ab2=True):
         self.c = case
@@ -26,6 +36,7 @@ class Solver:
         sh = (g.M + 1, g.Nz, g.Nr)
         self.us = np.zeros((3,) + sh, complex)
         self.ps = np.zeros(sh, complex)
+        self.ps_old = np.zeros(sh, complex)
         self.phis = {s: np.zeros(sh, complex) for s in case.scalars}
         self.prev_adv_u = None
         self.prev_adv_s = None
@@ -35,10 +46,11 @@ class Solver:
         self.rinv = 1.0 / g.rc
         self.timing = dict(scal=0.0, mom=0.0, proj=0.0, src=0.0)
         self.bc_p = BC(P_BC_LABELS, 1.0, np.zeros((g.Nt, g.Nz, g.Nr + 1)), np.zeros((g.Nt, g.Nz + 1, g.Nr)))
+        self.S = np.zeros((g.Nt, g.Nz, g.Nr))
 
     # ------------------------------------------------------------------ setup
     def set_state(self, u_phys, phi_phys, t=0.0):
-        """u_phys: (3, Nt, Nz, Nr) physical velocity; phi_phys: dict of physical scalars."""
+        """u_phys: (3, Nt, Nz, Nr) physical velocity; phi_phys: dict of physical scalars. Projects u (S = 0)."""
         g = self.g
         self.t = t
         for s in self.c.scalars:
@@ -47,11 +59,10 @@ class Solver:
             self.us[k] = g.spec(u_phys[k])
         self.us[:, :, g.solid] = 0
         self.rho, self.mu, self.Gam = self._props()
-        self.rhos = g.spec(self.rho)
-        # initial mass fluxes: interpolate rho u and project with d(rho)/dt = 0
+        self.rho0 = self.rho[:, g.fluid].min()
         u = np.array([g.phys(self.us[k]) for k in range(3)])
-        self.Fr, self.Fz, self.Gt = self._flux_star(self.rho * u, np.zeros_like(self.rho), self.t, 1.0, init=True)
-        self._project(1.0, self.rhos, self.rhos, self.rho, u_star=u, keep_p=False)
+        self.Ur, self.Uz, self.Ut = self._flux_star(u, self.t, 1.0, None)
+        self._project(1.0, u, np.zeros_like(self.S), keep_p=False)
 
     def _props(self):
         g = self.g
@@ -122,15 +133,11 @@ class Solver:
         return (1 + 0.5 * w) * a - 0.5 * w * prev
 
     # ------------------------------------------------------------------ physics operators
-    def _divF(self, Fr, Fz, Gt):
+    def _advect(self, f, fs, bc, divU):
+        """u . grad f  =  div_rz(U f_face) - f div_rz U + (u_theta / r) df/dtheta."""
         g = self.g
-        return div_faces(g, Fr, Fz) + self.rinv * g.dth(Gt)
-
-    def _advect(self, f, fs, bc, divF):
-        """rho u . grad f  =  div_rz(F f_face) - f div_rz F + (rho u_theta / r) df/dtheta."""
-        g = self.g
-        fr, fz = muscl_faces(g, f, self.Fr, self.Fz, bc)
-        return div_faces(g, self.Fr * fr, self.Fz * fz) - f * divF + self.Gt * self.rinv * g.dth(fs=fs)
+        fr, fz = muscl_faces(g, f, self.Ur, self.Uz, bc)
+        return div_faces(g, self.Ur * fr, self.Uz * fz) - f * divU + self.Ut * self.rinv * g.dth(fs=fs)
 
     def _diffuse(self, f, fs, Gam, bc):
         """div(Gam grad f) with face gradients, theta part pseudo-spectral."""
@@ -176,59 +183,77 @@ class Solver:
         Dz = (rf[1:] * t_rz[..., 1:] - rf[:-1] * t_rz[..., :-1]) / (r * g.dr) + g.dth(t_tz) / r + dzf(t_zz)
         return Dr, Dt, Dz
 
-    def _gradp_cell(self, p, ps):
+    def _grad(self, p, ps, extrap_n=True):
+        """cell gradient (r, theta, z) and face gradients of a pressure-like field."""
         g = self.g
-        _, gr, _, gz = faces(g, p, self.bc_p, extrap_n=True)
-        return 0.5 * (gr[..., :-1] + gr[..., 1:]), self.rinv * g.dth(fs=ps), 0.5 * (gz[:, :-1] + gz[:, 1:]), gr, gz
+        _, gr, _, gz = faces(g, p, self.bc_p, extrap_n=extrap_n)
+        return [0.5 * (gr[..., :-1] + gr[..., 1:]), self.rinv * g.dth(fs=ps), 0.5 * (gz[:, :-1] + gz[:, 1:])], gr, gz
 
-    def _flux_star(self, rhou, rho_unused, t, dt, init=False, gradp=None):
-        """Rhie-Chow face mass fluxes from cell rho u* (+ dt (interp<grad p> - grad_f p)); boundary fluxes prescribed."""
+    def _G(self):
+        """Dodd-Ferrante pressure acceleration G = grad p/rho0 + (1/rho - 1/rho0) grad p_hat: cells and faces."""
         g = self.g
-        Fr, _ = interp_faces(g, rhou[0], -1.0)
-        _, Fz = interp_faces(g, rhou[2])
-        if gradp is not None:
-            gcr, _, gcz, gr, gz = gradp
-            ir, _ = interp_faces(g, gcr, -1.0)
-            _, iz = interp_faces(g, gcz)
-            Fr += dt * (ir - gr)
-            Fz += dt * (iz - gz)
-        Fr[..., 0] = 0
-        bFr, bFz = self.c.bnd_mflux(t, self.rho)
-        for fam, F, bF in (('r', Fr, bFr), ('z', Fz, bFz)):
+        phs = 2 * self.ps - self.ps_old
+        gc, gr, gz = self._grad(g.phys(self.ps), self.ps)
+        hc, hr, hz = self._grad(g.phys(phs), phs)
+        ir0 = 1.0 / self.rho0
+        dr_ = 1.0 / self.rho - ir0
+        rr, rz = interp_faces(g, self.rho)
+        Gc = [ir0 * gc[k] + dr_ * hc[k] for k in range(3)]
+        Gr = ir0 * gr + (1.0 / rr - ir0) * hr
+        Gz = ir0 * gz + (1.0 / rz - ir0) * hz
+        return Gc, Gr, Gz
+
+    def _flux_star(self, u, t, dt, G):
+        """face volume fluxes from cell u* (+ dt (interp<G> - G_face), Rhie-Chow); boundary fluxes prescribed."""
+        g = self.g
+        Ur, _ = interp_faces(g, u[0], -1.0)
+        _, Uz = interp_faces(g, u[2])
+        if G is not None:
+            Gc, Gr, Gz = G
+            ir, _ = interp_faces(g, Gc[0], -1.0)
+            _, iz = interp_faces(g, Gc[2])
+            Ur += dt * (ir - Gr)
+            Uz += dt * (iz - Gz)
+        Ur[..., 0] = 0
+        ur, _, uz = self.c.vel_bc(t)
+        for fam, F, bv in (('r', Ur, ur.vr), ('z', Uz, uz.vz)):
             for L, bf in g.bfaces[fam].items():
                 if L in VEL_D:
-                    F[:, bf['j'], bf['i']] = bF[:, bf['j'], bf['i']]
-        Fr[:, g.lr == OFF] = 0
-        Fz[:, g.lz == OFF] = 0
-        return g.trunc(Fr), g.trunc(Fz), g.trunc(rhou[1])
+                    F[:, bf['j'], bf['i']] = bv[:, bf['j'], bf['i']]
+        Ur[:, g.lr == OFF] = 0
+        Uz[:, g.lz == OFF] = 0
+        return g.trunc(Ur), g.trunc(Uz), g.trunc(u[1])
 
-    def _project(self, dt, rhos_new, rhos_old, rho_new, u_star=None, keep_p=True):
-        """Solve L_m dp = (div F* + (rho^{n+1}-rho^n)/dt)/dt; correct F, rho u_theta, cell rho u."""
+    def _project(self, dt, u_star, S, keep_p=True):
+        """L_m dp = rho0 (div U* - S)/dt; U^{n+1} = U* - dt grad dp/rho0 (faces), same with cell gradients."""
         g = self.g
-        Frs, Fzs, Gts = g.spec(self.Fr), g.spec(self.Fz), g.spec(self.Gt)
-        divs = div_faces(g, Frs, Fzs) + 1j * g.mm * self.rinv * Gts
-        rhs = (divs + (rhos_new - rhos_old) / dt) / dt
+        Urs, Uzs, Uts = g.spec(self.Ur), g.spec(self.Uz), g.spec(self.Ut)
+        Ss = g.spec(S)
+        divs = div_faces(g, Urs, Uzs) + 1j * g.mm * self.rinv * Uts
+        rhs = self.rho0 * (divs - Ss) / dt
         rhs[:, g.solid] = 0
         dps = np.empty_like(rhs)
         for m in range(g.M + 1):
             dps[m] = csolve(self.f.get(m, P_BC_LABELS, None), rhs[m].ravel()).reshape(g.Nz, g.Nr)
         dp = g.phys(dps)
-        gcr, gct, gcz, gr, gz = self._gradp_cell(dp, dps)
+        gc, _, _ = self._grad(dp, dps)
         _, grn, _, gzn = faces(g, dp, self.bc_p)       # zero on Neumann faces
-        self.Fr = g.phys(Frs) - dt * grn
-        self.Fz = g.phys(Fzs) - dt * gzn
-        self.Fr[..., 0] = 0
-        self.Fr[:, g.lr == OFF] = 0
-        self.Fz[:, g.lz == OFF] = 0
-        self.Gt = g.phys(Gts) - dt * gct
-        rhou = rho_new * u_star - dt * np.array([gcr, gct, gcz])
-        u = rhou / rho_new
+        c = dt / self.rho0
+        self.Ur = g.phys(Urs) - c * grn
+        self.Uz = g.phys(Uzs) - c * gzn
+        self.Ur[..., 0] = 0
+        self.Ur[:, g.lr == OFF] = 0
+        self.Uz[:, g.lz == OFF] = 0
+        self.Ut = g.phys(Uts) - c * gc[1]
+        u = np.array([u_star[0] - c * gc[0], self.Ut, u_star[2] - c * gc[2]])
         for k in range(3):
             self.us[k] = g.spec(u[k])
         self.us[:, :, g.solid] = 0
-        self.ps = (self.ps + dps) if keep_p else self.ps
-        self.last_div = np.abs(g.phys(div_faces(g, g.spec(self.Fr), g.spec(self.Fz)) + 1j * g.mm * self.rinv * g.spec(self.Gt)
-                               + (rhos_new - rhos_old) / dt)[:, g.fluid]).max()
+        if keep_p:
+            self.ps_old = self.ps
+            self.ps = self.ps + dps
+        self.last_div = np.abs(g.phys(div_faces(g, g.spec(self.Ur), g.spec(self.Uz)) + 1j * g.mm * self.rinv
+                                      * g.spec(self.Ut) - Ss)[:, g.fluid]).max()
 
     # ------------------------------------------------------------------ time step
     def step(self):
@@ -236,18 +261,24 @@ class Solver:
         self._check_coeffs()
         dt = self._choose_dt()
         t1 = self.t + dt
-        divF = div_faces(g, self.Fr, self.Fz)    # (r, z) part only: theta advection is in advective form
-        # 1. scalars
+        divU = div_faces(g, self.Ur, self.Uz)    # (r, z) part only: theta advection is in advective form
+        # 1. scalars (Strang: half source step before and after transport if case.strang)
         t0 = time.time()
-        adv_s = {}
-        new = {}
+        old = self.phis
+        strang = getattr(c, 'strang', False)
+        if strang:
+            phi = {s: g.phys(self.phis[s]) for s in c.scalars}
+            phi = c.source(phi, self.rho, 0.5 * dt, self.t)
+            self.phis = {s: g.spec(phi[s]) for s in c.scalars}
+        adv_s, used, new = {}, {}, {}
         for s in c.scalars:
             bc = c.scalar_bc[s]
             fs = self.phis[s]
             f = g.phys(fs)
-            a = g.spec(self._advect(f, fs, bc, divF) / self.rho)
+            a = g.spec(self._advect(f, fs, bc, divU))
             adv_s[s] = a
             A = self._ab2(a, None if self.prev_adv_s is None else self.prev_adv_s[s], dt)
+            used[s] = A
             Gs = self.Gam[s] if isinstance(self.Gam, dict) else self.Gam
             dif = g.spec(self._diffuse(f, fs, Gs, bc) / self.rho)
             dl = bc.d
@@ -262,15 +293,21 @@ class Solver:
         t0 = time.time()
         if hasattr(c, 'source'):
             phi = {s: g.phys(self.phis[s]) for s in c.scalars}
-            phi = c.source(phi, self.rho, dt, t1)
+            phi = c.source(phi, self.rho, 0.5 * dt if strang else dt, t1)
             self.phis = {s: g.spec(phi[s]) for s in c.scalars}
         if hasattr(c, 'fix'):
             c.fix(self.phis, t1)
         self.timing['src'] += time.time() - t0
-        # 2. equation of state
-        rho_old, rhos_old = self.rho, self.rhos
+        # 2. equation of state and divergence constraint from the non-advective scalar rates
         self.rho, self.mu, self.Gam = self._props()
-        self.rhos = g.spec(self.rho)
+        self.rho0 = self.rho[:, g.fluid].min()
+        phi = {s: g.phys(self.phis[s]) for s in c.scalars}
+        dl = c.dlnrho(phi) if hasattr(c, 'dlnrho') else {}
+        S = np.zeros_like(self.rho)
+        for s, d in dl.items():
+            S -= d * g.phys((self.phis[s] - old[s]) / dt + used[s])
+        S[:, g.solid] = 0
+        self.S = g.trunc(S)
         # 3. momentum predictor
         t0 = time.time()
         u = np.array([g.phys(self.us[k]) for k in range(3)])
@@ -278,17 +315,18 @@ class Solver:
         bcs_1 = c.vel_bc(t1)
         adv = np.empty_like(u)
         for k in range(3):
-            adv[k] = self._advect(u[k], self.us[k], bcs_n[k], divF)
-        adv[0] -= self.Gt * u[1] * self.rinv
-        adv[1] += self.Gt * u[0] * self.rinv
-        a_u = np.array([g.spec(adv[k] / self.rho) for k in range(3)])
+            adv[k] = self._advect(u[k], self.us[k], bcs_n[k], divU)
+        adv[0] -= self.Ut * u[1] * self.rinv
+        adv[1] += self.Ut * u[0] * self.rinv
+        a_u = np.array([g.spec(adv[k]) for k in range(3)])
         A = self._ab2(a_u, self.prev_adv_u, dt)
         self.prev_adv_u = a_u
         tau = self._taudiv(u, bcs_n, self.mu)
-        gcr, gct, gcz, gr, gz = self._gradp_cell(g.phys(self.ps), self.ps)
+        G = self._G()
+        Gc = G[0]
         buoy = (self.rho - c.rho_inf) * G_Z
-        E = np.array([g.spec((tau[0] - gcr) / self.rho), g.spec((tau[1] - gct) / self.rho),
-                      g.spec((tau[2] - gcz + buoy) / self.rho)])
+        E = np.array([g.spec(tau[0] / self.rho - Gc[0]), g.spec(tau[1] / self.rho - Gc[1]),
+                      g.spec((tau[2] + buoy) / self.rho - Gc[2])])
         R = self.us + dt * (E - A)
         cc = dt * self.nu0
         bvn = [g.spec(g.gather_d(VEL_D, b.vr, b.vz)) for b in bcs_n]
@@ -314,9 +352,8 @@ class Solver:
         t0 = time.time()
         up = np.array([g.phys(ustar[k]) for k in range(3)])
         self.t = t1
-        self.Fr, self.Fz, self.Gt = self._flux_star(self.rho * up, None, t1, dt,
-                                                    gradp=(gcr, gct, gcz, gr, gz))
-        self._project(dt, self.rhos, rhos_old, self.rho, u_star=up)
+        self.Ur, self.Uz, self.Ut = self._flux_star(up, t1, dt, G)
+        self._project(dt, up, self.S)
         self.timing['proj'] += time.time() - t0
         self.dt_prev = dt
         self.n += 1
@@ -333,7 +370,7 @@ class Solver:
 
     def save(self, path, **extra):
         g = self.g
-        np.savez_compressed(path, t=self.t, rf=g.rf, zf=g.zf, M=g.M, us=self.us, ps=self.ps,
+        np.savez_compressed(path, t=self.t, rf=g.rf, zf=g.zf, M=g.M, us=self.us, ps=self.ps, ps_old=self.ps_old,
                             phis=np.array([self.phis[s] for s in self.c.scalars]),
                             scalars=np.array(self.c.scalars), **extra)
 
@@ -342,7 +379,10 @@ class Solver:
         g = self.g
         M = min(int(d['M']), g.M)
         self.us[:] = 0; self.us[:, :M + 1] = d['us'][:, :M + 1]
-        self.ps[:] = 0; self.ps[:M + 1] = d['ps'][:M + 1]
+        ps = np.zeros_like(self.ps); ps[:M + 1] = d['ps'][:M + 1]
+        pso = ps.copy()
+        if 'ps_old' in d:
+            pso[:] = 0; pso[:M + 1] = d['ps_old'][:M + 1]
         names = list(d['scalars'])
         u = np.array([g.phys(self.us[k]) for k in range(3)])
         phi = {}
@@ -351,6 +391,5 @@ class Solver:
             if s in names:
                 fs[:M + 1] = d['phis'][names.index(s)][:M + 1]
             phi[s] = g.phys(fs)
-        ps = self.ps.copy()
         self.set_state(u, phi, float(d['t']))
-        self.ps = ps
+        self.ps, self.ps_old = ps, pso

@@ -9,6 +9,7 @@ Species order: C12H26, O2, CO, CO2, H2O, N2 (N2 inert, Y_N2 = 1 - sum of the oth
 """
 import os, re, json, subprocess, sys
 import numpy as np
+import numba as nb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -104,18 +105,53 @@ def hs_mix(T, Y):
     return (hs_k(T) * Y).sum(0)
 
 
+@nb.njit(parallel=True, cache=True)
+def _cp_mix_nb(T, Y, hi, lo, Wk):
+    out = np.empty_like(T)
+    for p in nb.prange(T.shape[0]):
+        Tp = T[p]
+        cp = 0.0
+        for k in range(6):
+            a = hi[k] if Tp >= 1000.0 else lo[k]
+            cp += Y[k, p] * (a[0] + Tp * (a[1] + Tp * (a[2] + Tp * (a[3] + Tp * a[4])))) * 8314.46261815324 / Wk[k]
+        out[p] = cp
+    return out
+
+
 def cp_mix(T, Y):
-    return (cp_k(T) * Y).sum(0)
+    T = np.asarray(T, float)
+    return _cp_mix_nb(np.ascontiguousarray(T).ravel(), np.ascontiguousarray(Y, float).reshape(6, -1), _HI, _LO, W).reshape(T.shape)
 
 
-def T_from_hs(hs, Y, T0=None, it=30):
-    T = np.full_like(hs, 1000.0) if T0 is None else np.clip(T0.copy(), 250, 3500)
-    for _ in range(it):
-        dT = (hs - hs_mix(T, Y)) / cp_mix(T, Y)
-        T = np.clip(T + dT, 200, 4000)
-        if np.abs(dT).max() < 1e-6:
-            break
+@nb.njit(parallel=True, cache=True)
+def _T_from_hs_nb(hs, Y, T, hi, lo, Wk, hf):
+    n = hs.shape[0]
+    for p in nb.prange(n):
+        Tp = min(max(T[p], 250.0), 3500.0)
+        for it in range(50):
+            h = 0.0
+            cp = 0.0
+            for k in range(6):
+                a = hi[k] if Tp >= 1000.0 else lo[k]
+                cpR = a[0] + Tp * (a[1] + Tp * (a[2] + Tp * (a[3] + Tp * a[4])))
+                hRT = a[0] + Tp * (a[1] / 2 + Tp * (a[2] / 3 + Tp * (a[3] / 4 + Tp * a[4] / 5))) + a[5] / Tp
+                rw = 8314.46261815324 / Wk[k]
+                h += Y[k, p] * (hRT * rw * Tp - hf[k])
+                cp += Y[k, p] * cpR * rw
+            dT = (hs[p] - h) / cp
+            Tp = min(max(Tp + dT, 200.0), 4000.0)
+            if abs(dT) < 1e-7:
+                break
+        T[p] = Tp
     return T
+
+
+def T_from_hs(hs, Y, T0=None):
+    """temperature from sensible enthalpy (Newton, per point, numba)"""
+    shp = hs.shape
+    T = np.full(hs.size, 1000.0) if T0 is None else np.array(T0, float).ravel().copy()
+    return _T_from_hs_nb(np.ascontiguousarray(hs, float).ravel(), np.ascontiguousarray(Y.reshape(6, -1), float), T,
+                         _HI, _LO, W, HF).reshape(shp)
 
 
 def transport(T, Y):
