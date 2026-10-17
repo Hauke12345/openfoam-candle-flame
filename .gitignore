@@ -5,7 +5,7 @@ blend/
 gif/
 out/
 *.log
+!quasi3d/out/
 quasi3d/out/*.npz
 quasi3d/out/*.npy
 quasi3d/out/*.log
-__pycache__/
