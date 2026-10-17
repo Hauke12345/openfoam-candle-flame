@@ -144,7 +144,8 @@ def run(case_cls, M, V, t_end, hr, hz, restart=None, tag='stage2', t_on=-1.0, cf
     sol = Solver(case, cfl=cfl, dt_max=2e-4, beta=float(os.environ.get('BETA', 0.0)))
     if restart:
         sol.load(restart)
-        if V > 0 and case.t_on < sol.t:
+        # DRAFT_KICK=0: continuation of a run that already has the draft (no second superposition)
+        if V > 0 and case.t_on < sol.t and os.environ.get('DRAFT_KICK', '1') != '0':
             # switch the draft on by superposing the uniform draft on the restart state (potential start)
             f = sol.fields()
             u = np.array([f['ur'] + V * case.cos, f['ut'] - V * case.sin, f['uz']])

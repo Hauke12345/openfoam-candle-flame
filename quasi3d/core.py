@@ -115,10 +115,12 @@ class Grid:
 
     # ---------- Fourier ----------
     def phys(self, fs):
+        """physical values at the Nt angles of a spectrum with M+1 modes, or with all Nt//2+1 modes (full-resolution
+        scalars of the THETA_FV option, see spec_full)."""
         if self.M == 0:
             return fs.real.copy()
         c = np.zeros((self.Nt // 2 + 1,) + fs.shape[1:], complex)
-        c[:self.M + 1] = fs
+        c[:fs.shape[0]] = fs
         return np.fft.irfft(c, n=self.Nt, axis=0) * self.Nt
 
     def spec(self, fp):
@@ -128,6 +130,16 @@ class Grid:
         s[0] = s[0].real
         return s
 
+    def spec_full(self, fp):
+        """all Nt//2+1 modes: an exact (invertible) representation of the values at the Nt collocation angles."""
+        if self.M == 0:
+            return fp.astype(complex)
+        s = np.fft.rfft(fp, axis=0) / self.Nt
+        s[0] = s[0].real
+        if self.Nt % 2 == 0:
+            s[-1] = s[-1].real
+        return s
+
     def trunc(self, fp):
         return self.phys(self.spec(fp))
 
@@ -135,7 +147,10 @@ class Grid:
         """d/dtheta of a physical field (or of its spectrum fs), returned physical."""
         if fs is None:
             fs = self.spec(fp)
-        return self.phys(1j * self.mm * fs)
+        m = np.arange(fs.shape[0]).reshape((-1,) + (1,) * (fs.ndim - 1))
+        if fs.shape[0] == self.Nt // 2 + 1 and self.Nt % 2 == 0 and self.M > 0:
+            m = np.where(m == self.Nt // 2, 0, m)      # derivative of the Nyquist mode is undefined: drop it
+        return self.phys(1j * m * fs)
 
     def axis_ghost(self, f0, s):
         """value at r = -r_c[0], theta: s * f(r_c[0], theta + pi). f0: (Nt, Nz)."""
@@ -352,3 +367,38 @@ def csolve(lu, rhs):
     X = lu.solve(np.ascontiguousarray(np.concatenate([R.real, R.imag], 0).T))
     n = R.shape[0]
     return (X[:, :n] + 1j * X[:, n:]).T.reshape(shp)
+
+
+# ---------------------------------------------------------------- finite-volume theta operators (THETA_FV option)
+def theta_face_velocity(g, Ut):
+    """u_theta at the theta faces theta_k + dth/2 of a (M-mode) cell field Ut, chosen such that the finite-volume
+    theta divergence (Utf_{k+1/2} - Utf_{k-1/2}) / dth equals the spectral derivative d Ut/d theta at every
+    collocation angle: Utf_m = Ut_m (m dth/2)/sin(m dth/2) e^{i m dth/2} (m <= M < Nt/2, factor <= 1.21). Then the
+    FV mass fluxes of the scalars see exactly the divergence that the spectral projection enforces."""
+    if g.M == 0:
+        return np.zeros_like(Ut)
+    dth = 2 * np.pi / g.Nt
+    a = 0.5 * g.m * dth
+    fac = np.where(g.m > 0, a / np.where(g.m > 0, np.sin(a), 1.0), 1.0) * np.exp(1j * a)
+    return g.phys(g.spec(Ut) * fac.reshape((-1,) + (1,) * (Ut.ndim - 1)))
+
+
+def muscl_theta(f, U):
+    """MUSCL (van Leer) face values at theta_k + dth/2 (index k) of a periodic cell field f (axis 0), upwind by
+    the sign of the face velocity U (same shape)."""
+    fp = np.roll(f, -1, 0)                 # f_{k+1}
+    pos = U >= 0
+    Uc = np.where(pos, f, fp)              # upwind cell
+    D = np.where(pos, fp, f)               # downwind cell
+    UU = np.where(pos, np.roll(f, 1, 0), np.roll(f, -2, 0))
+    den = D - Uc
+    ok = np.abs(den) > 1e-30
+    rat = np.where(ok, (Uc - UU) / np.where(ok, den, 1.0), 0.0)
+    return Uc + 0.5 * vanleer(rat) * den
+
+
+def theta_k_eff(g, n):
+    """eigenvalues k_eff(m)^2 of minus the second-order periodic difference operator in theta (spacing 2 pi/Nt) for
+    modes m = 0..n-1: k_eff = (Nt/pi) sin(m pi/Nt) (-> m for m << Nt)."""
+    m = np.arange(n)
+    return g.Nt / np.pi * np.sin(m * np.pi / g.Nt) if g.M > 0 else m.astype(float)

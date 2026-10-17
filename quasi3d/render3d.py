@@ -77,7 +77,7 @@ def load(path):
     """Read a Solver.save npz into a dict (arrays + derived cell-centre coordinates)."""
     d = np.load(path)
     s = dict(t=float(d['t']), rf=d['rf'], zf=d['zf'], M=int(d['M']), us=d['us'], ps=d['ps'], phis=d['phis'],
-             scalars=[str(x) for x in d['scalars']])
+             scalars=[str(x) for x in d['scalars']], theta_fv=bool(d['theta_fv']) if 'theta_fv' in d else False)
     s['rc'] = 0.5 * (s['rf'][1:] + s['rf'][:-1])
     s['zc'] = 0.5 * (s['zf'][1:] + s['zf'][:-1])
     return s
@@ -88,6 +88,16 @@ def eval_scalar(state, k, theta):
     f = f_0 + 2 Re sum_{m>=1} f_m e^{i m th}."""
     c = state['phis'][k]                                   # (M+1, Nz, Nr)
     th = np.asarray(theta, float).ravel()
+    if state.get('theta_fv') and c.shape[0] > 1:
+        # THETA_FV scalars: values at Nt cells (all Nt//2+1 modes stored); interpolate linearly in theta between
+        # the cell values instead of the trigonometric interpolant (which would ring between the cells)
+        Nt = 2 * (c.shape[0] - 1)
+        cc = np.zeros((Nt // 2 + 1,) + c.shape[1:], complex); cc[:c.shape[0]] = c
+        v = np.fft.irfft(cc, n=Nt, axis=0) * Nt
+        x = (th % (2 * np.pi)) / (2 * np.pi / Nt)
+        i0 = np.floor(x).astype(int) % Nt; w = (x - np.floor(x))[:, None, None]
+        out = (1 - w) * v[i0] + w * v[(i0 + 1) % Nt]
+        return out.reshape(np.shape(theta) + c.shape[1:])
     m = np.arange(c.shape[0])
     E = np.exp(1j * np.outer(th, m)); E[:, 1:] *= 2
     out = np.einsum('tm,mzr->tzr', E, c).real

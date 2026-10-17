@@ -16,7 +16,7 @@ Variable-density projection with a divergence constraint (velocity projection, D
 import time
 import numpy as np
 from core import (faces, interp_faces, div_faces, muscl_faces, Factor, csolve, BC,
-                  OUTER, TOP, POOL, OPEN, WICK, OFF, G_Z)
+                  OUTER, TOP, POOL, OPEN, WICK, OFF, G_Z, theta_face_velocity, muscl_theta, theta_k_eff)
 
 VEL_D = {OUTER, OPEN, POOL, WICK}
 P_BC_LABELS = {TOP}
@@ -40,20 +40,30 @@ class Solver:
         self.cfl, self.dt_max, self.ab2, self.beta = cfl, dt_max, ab2, beta
         self.mismatch = 0.0
         self.clip = bool(int(__import__('os').environ.get('CLIP', '0')))
+        # THETA_FV (env or case.theta_fv): scalars live at the Nt collocation angles (stored as all Nt//2+1 modes, an
+        # exact representation) and are transported in theta by a monotone finite-volume scheme (MUSCL/van Leer,
+        # SSP-RK2, sub-cycled per ring), theta diffusion by second-order differences; velocity/pressure stay spectral
+        # (M modes). Removes the Gibbs ringing of sharp scalar fronts in theta (see _theta_step).
+        fv = __import__('os').environ.get('THETA_FV')
+        fv = bool(int(fv)) if fv is not None else bool(getattr(case, 'theta_fv', False))
+        self.fv = fv and g.M > 0
+        self.ns = g.Nt // 2 + 1 if self.fv else g.M + 1
+        self.km_s = theta_k_eff(g, self.ns) if self.fv else g.m
+        self.th_nsub = 0
         self.r_theta_min = r_theta_min if r_theta_min is not None else 4 * g.rc[0]
         self.t, self.n = 0.0, 0
         sh = (g.M + 1, g.Nz, g.Nr)
         self.us = np.zeros((3,) + sh, complex)
         self.ps = np.zeros(sh, complex)
         self.ps_old = np.zeros(sh, complex)
-        self.phis = {s: np.zeros(sh, complex) for s in case.scalars}
+        self.phis = {s: np.zeros((self.ns,) + sh[1:], complex) for s in case.scalars}
         self.prev_adv_u = None
         self.prev_adv_s = None
         self.dt_prev = None
         self.klev = None
         self.nu0 = self.D0 = None
         self.rinv = 1.0 / g.rc
-        self.timing = dict(scal=0.0, mom=0.0, proj=0.0, src=0.0)
+        self.timing = dict(scal=0.0, mom=0.0, proj=0.0, src=0.0, theta=0.0)
         self.bc_p = BC(P_BC_LABELS, 1.0, np.zeros((g.Nt, g.Nz, g.Nr + 1)), np.zeros((g.Nt, g.Nz + 1, g.Nr)))
         self.S = np.zeros((g.Nt, g.Nz, g.Nr))
 
@@ -64,7 +74,7 @@ class Solver:
         c = self.c
         self.t = t
         for s in self.c.scalars:
-            self.phis[s] = g.spec(phi_phys[s])
+            self.phis[s] = self._sspec(phi_phys[s])
         for k in range(3):
             self.us[k] = g.spec(u_phys[k])
         self.us[:, :, g.solid] = 0
@@ -88,6 +98,15 @@ class Solver:
         return rho, mu, Gam
 
     # ------------------------------------------------------------------ helpers
+    def _sspec(self, f):
+        """spectrum of a physical scalar field: all modes (exact) with THETA_FV, else truncated to M."""
+        return self.g.spec_full(f) if self.fv else self.g.spec(f)
+
+    @staticmethod
+    def _kkey(k):
+        k = float(k)
+        return int(k) if k.is_integer() else k
+
     def _mode_k(self, shift):
         return np.abs(self.g.m + shift)
 
@@ -95,8 +114,8 @@ class Solver:
         """A_k x + B b per mode; xs (M+1, Nz, Nr) spectral, bvals (M+1, nD) spectral."""
         g = self.g
         out = np.empty_like(xs)
-        for m in range(g.M + 1):
-            A, B = g.lap_matrix(int(k_of_m[m]), dlabels)
+        for m in range(len(k_of_m)):
+            A, B = g.lap_matrix(self._kkey(k_of_m[m]), dlabels)
             v = A @ xs[m].ravel()
             if B.shape[1]:
                 v = v + B @ bvals[m]
@@ -107,8 +126,8 @@ class Solver:
         """(I - c A_k) x = rhs + c B b per mode."""
         g = self.g
         out = np.empty_like(rhs)
-        for m in range(g.M + 1):
-            k = int(k_of_m[m])
+        for m in range(len(k_of_m)):
+            k = self._kkey(k_of_m[m])
             A, B = g.lap_matrix(k, dlabels)
             r = rhs[m].ravel().copy()
             if B.shape[1]:
@@ -140,7 +159,7 @@ class Solver:
             self.nu0 = 0.6 * nu
         if self.D0 is None or D > 1.9 * self.D0 or D < 0.5 * self.D0:
             self.D0 = 0.6 * D
-        if len(self.f.cache) > 6 * (self.g.M + 3) * 4:
+        if len(self.f.cache) > 6 * (self.ns + self.g.M + 3) * 4:
             self.f.cache.clear()
 
     def _ab2(self, a, prev, dt):
@@ -150,13 +169,78 @@ class Solver:
         return (1 + 0.5 * w) * a - 0.5 * w * prev
 
     # ------------------------------------------------------------------ physics operators
-    def _face_states(self):
+    def _face_states(self, phis=None):
         """MUSCL face values (r and z faces) of every scalar for the volume fluxes U^n: used both for the scalar
         fluxes and for the face density of the mass fluxes."""
         g, c = self.g, self.c
+        phis = self.phis if phis is None else phis
         self._sf = {}
         for s in c.scalars:
-            self._sf[s] = muscl_faces(g, g.phys(self.phis[s]), self.Ur, self.Uz, c.scalar_bc[s])
+            self._sf[s] = muscl_faces(g, g.phys(phis[s]), self.Ur, self.Uz, c.scalar_bc[s])
+
+    CMAX_THETA = 0.5
+
+    def _theta_step(self, dt):
+        """THETA_FV: theta advection of all scalars over dt (first part of a Lie split; the (r, z) advection and
+        diffusion follow from its result). Mass-consistent advective form on the Nt-cell rings,
+            rho_c d phi/dt = -[F_{k+1/2} (phi_{k+1/2} - phi_k) - F_{k-1/2} (phi_{k-1/2} - phi_k)] / (r dth),
+        with MUSCL/van Leer face states, face mass fluxes F = rho_EOS(phi_face) Utf (Utf: theta_face_velocity, whose
+        FV divergence equals the spectral one), frozen over the step. SSP-RK2, sub-cycled per ring so that the
+        Courant number dt (|F+| + |F-|)/(rho r dth) <= CMAX_THETA (the rings next to the axis need 2-3 sub-steps):
+        each sub-step is a convex combination of neighbour values, i.e. bounded (no new extrema) and conservative.
+        Returns physical scalars and the theta mass-flux divergence (for the continuity budget)."""
+        g, c = self.g, self.c
+        dth = 2 * np.pi / g.Nt
+        phi = {}
+        for s in c.scalars:
+            f = g.phys(self.phis[s])
+            f[:, g.solid] = c.scalar_bc[s].solid_fill
+            phi[s] = f
+        Utf = theta_face_velocity(g, self.Ut)
+        Utf[:, g.solid] = 0
+        dens = getattr(c, 'density', None)
+        if dens is not None and not getattr(c, 'legacy_flux', False):
+            rf = dens({s: muscl_theta(phi[s], Utf) for s in c.scalars})
+        else:
+            rf = np.where(Utf >= 0, self.rho, np.roll(self.rho, -1, 0))
+        Fp = rf * Utf
+        Fp[:, g.solid] = 0
+        Fm = np.roll(Fp, 1, 0)
+        irdt = 1.0 / (g.rc * dth)
+        divFt = (Fp - Fm) * irdt
+        dF = Fp - Fm
+        rho0 = self.rho
+        rho_lo = np.maximum(np.minimum(rho0, rho0 - dt * divFt), 0.25 * rho0)
+        cour = (dt * (np.abs(Fp) + np.abs(Fm)) * irdt / rho_lo).max(0)
+        nsub = np.maximum(1, np.ceil(cour / self.CMAX_THETA)).astype(int)
+        nsub[g.solid] = 1
+        nmax = int(nsub.max())
+        h = (dt / nsub) * irdt        # (Nz, Nr)
+        # continuity density of each sub-step (frozen fluxes): rho_{q+1} = rho_q - h dF. The scalar update
+        # rho_{q+1} phi_{q+1} = rho_q phi_q - h div(F phi_f) (advective form with the new density) is then exactly
+        # conservative w.r.t. continuity and a convex combination of neighbour values (bounded).
+        rhos = [rho0]
+        for it in range(nmax):
+            act = it < nsub
+            rhos.append(np.where(act, np.maximum(rhos[-1] - h * dF, 0.25 * rho0), rhos[-1]))
+
+        def flux_div(f):
+            fF = Fp * muscl_theta(f, Utf)
+            return h * (fF - np.roll(fF, 1, 0))
+        for s in c.scalars:
+            f = phi[s]
+            for it in range(nmax):
+                r1 = rhos[it + 1]
+                fdF = f * h * dF
+                # Euler stage and SSP-RK2 average (rho_2 = rho_1), written in advective form: identical to the
+                # conservative form rho_1 phi_1 = rho_0 phi_0 - h div(F phi_f) where rho_1 = rho_0 - h dF, and still
+                # constant-preserving where the density floor is active
+                f1 = f - (flux_div(f) - fdF) / r1
+                f2 = 0.5 * (f + f1 - (flux_div(f1) - fdF) / r1)
+                f = np.where(it < nsub, f2, f) if it else f2
+            phi[s] = f
+        self.th_nsub = nmax
+        return phi, divFt
 
     def _mass_fluxes(self):
         """face mass fluxes F = rho_f U and their (r, z) divergence.
@@ -193,19 +277,29 @@ class Solver:
         self.Fr, self.Fz = Fr, Fz
         return div_faces(g, Fr, Fz)
 
-    def _advect(self, f, fs, bc, divF, ffaces=None):
+    def _advect(self, f, fs, bc, divF, ffaces=None, theta=True):
         """u . grad f = [div_rz(F f_face) - f div_rz F] / rho + (u_theta / r) df/dtheta, F = rho U on faces
-        (mass-consistent advective form: conservative for rho f where div F matches the density change)."""
+        (mass-consistent advective form: conservative for rho f where div F matches the density change).
+        theta=False: (r, z) part only (THETA_FV scalars, theta transport in _theta_step)."""
         g = self.g
         fr, fz = muscl_faces(g, f, self.Ur, self.Uz, bc) if ffaces is None else ffaces
-        return (div_faces(g, self.Fr * fr, self.Fz * fz) - f * divF) / self.rho + self.Ut * self.rinv * g.dth(fs=fs)
+        a = (div_faces(g, self.Fr * fr, self.Fz * fz) - f * divF) / self.rho
+        return a + self.Ut * self.rinv * g.dth(fs=fs) if theta else a
 
     def _diffuse(self, f, fs, Gam, bc):
         """div(Gam grad f) with face gradients, theta part pseudo-spectral."""
         g = self.g
         _, gr, _, gz = faces(g, f, bc)
         Gr, Gz = interp_faces(g, Gam)
-        return div_faces(g, Gr * gr, Gz * gz) + self.rinv ** 2 * g.dth(Gam * g.dth(fs=fs))
+        if self.fv:
+            # second-order FV in theta (monotone; its implicit constant-coefficient part uses k_eff, theta_k_eff)
+            dth = 2 * np.pi / g.Nt
+            Gf = 0.5 * (Gam + np.roll(Gam, -1, 0))
+            fl = Gf * (np.roll(f, -1, 0) - f) / dth
+            th = (fl - np.roll(fl, 1, 0)) / dth
+        else:
+            th = g.dth(Gam * g.dth(fs=fs))
+        return div_faces(g, Gr * gr, Gz * gz) + self.rinv ** 2 * th
 
     def _taudiv(self, u, bcs, mu):
         """div tau, tau = mu (grad u + grad u^T) - 2/3 mu div(u) I, in cylindrical components."""
@@ -329,27 +423,37 @@ class Solver:
         if strang:
             phi = {s: g.phys(self.phis[s]) for s in c.scalars}
             phi = c.source(phi, self.rho, 0.5 * dt, self.t)
-            self.phis = {s: g.spec(phi[s]) for s in c.scalars}
+            self.phis = {s: self._sspec(phi[s]) for s in c.scalars}
         self._last_phi_n = self.phis
-        self._face_states()           # face states of the transported (post half-source) scalars
+        divFt = None
+        if self.fv:
+            # theta advection first (bounded FV, sub-cycled), then (r, z) advection + diffusion from its result
+            t2 = time.time()
+            pt, divFt = self._theta_step(dt)
+            phis_t = {s: self._sspec(pt[s]) for s in c.scalars}
+            self.timing['theta'] += time.time() - t2
+        else:
+            phis_t = self.phis
+        self._face_states(phis_t)     # face states of the transported (post half-source) scalars
         divF = self._mass_fluxes()    # (r, z) part only: theta advection is in advective form
         adv_s, used, new = {}, {}, {}
         for s in c.scalars:
             bc = c.scalar_bc[s]
-            fs = self.phis[s]
+            fs = phis_t[s]
             f = g.phys(fs)
-            a = g.spec(self._advect(f, fs, bc, divF, self._sf[s]))
+            a = self._sspec(self._advect(f, fs, bc, divF, self._sf[s], theta=not self.fv))
             adv_s[s] = a
             A = self._ab2(a, None if self.prev_adv_s is None else self.prev_adv_s[s], dt)
-            used[s] = A
+            # advective rate of the whole step (enters S): (r, z) part + theta part of the split
+            used[s] = A + (self.phis[s] - fs) / dt if self.fv else A
             Gs = self.Gam[s] if isinstance(self.Gam, dict) else self.Gam
-            dif = g.spec(self._diffuse(f, fs, Gs, bc) / self.rho)
+            dif = self._sspec(self._diffuse(f, fs, Gs, bc) / self.rho)
             dl = bc.d
-            bv = g.spec(g.gather_d(dl, bc.vr, bc.vz)) if dl else np.zeros((g.M + 1, 0), complex)
+            bv = self._sspec(g.gather_d(dl, bc.vr, bc.vz)) if dl else np.zeros((self.ns, 0), complex)
             cc = dt * self.D0
-            rhs = fs + dt * (dif - A) - cc * self._lap_apply(fs, g.m, dl, bv)
-            new[s] = self._helm_solve(rhs, g.m, dl, cc, bv)
-            new[s][:, g.solid] = g.spec(np.full((g.Nt,) + g.solid.shape, bc.solid_fill))[:, g.solid]
+            rhs = fs + dt * (dif - A) - cc * self._lap_apply(fs, self.km_s, dl, bv)
+            new[s] = self._helm_solve(rhs, self.km_s, dl, cc, bv)
+            new[s][:, g.solid] = self._sspec(np.full((g.Nt,) + g.solid.shape, bc.solid_fill))[:, g.solid]
         self.prev_adv_s = adv_s
         self.phis = new
         self.timing['scal'] += time.time() - t0
@@ -357,7 +461,7 @@ class Solver:
         if hasattr(c, 'source'):
             phi = {s: g.phys(self.phis[s]) for s in c.scalars}
             phi = c.source(phi, self.rho, 0.5 * dt if strang else dt, t1)
-            self.phis = {s: g.spec(phi[s]) for s in c.scalars}
+            self.phis = {s: self._sspec(phi[s]) for s in c.scalars}
         if hasattr(c, 'fix'):
             c.fix(self.phis, t1)
         # bound preservation (opt-in, case.bounds = {name: (lo, hi)}): clip at the collocation angles and project the
@@ -365,7 +469,7 @@ class Solver:
         if self.clip:
             for s, (lo, hi) in getattr(c, 'bounds', {}).items():
                 f = g.phys(self.phis[s])
-                self.phis[s] = self.phis[s] + g.spec(np.clip(f, lo, hi) - f)
+                self.phis[s] = self.phis[s] + self._sspec(np.clip(f, lo, hi) - f)
         self.timing['src'] += time.time() - t0
         # 2. equation of state and divergence constraint from the non-advective scalar rates
         rho_n = self.rho
@@ -383,9 +487,10 @@ class Solver:
             S += self.beta * (rho_star - self.rho) / (self.rho * dt)
             self.mismatch = np.abs((rho_star - self.rho) / self.rho)[:, g.fluid].max()
         S[:, g.solid] = 0
+        self._S_full = S
         self.S = g.trunc(S)
         if getattr(c, 'budget', None):
-            self._budget(rho_n, divF, dt)
+            self._budget(rho_n, divF, dt, divFt)
         # 3. momentum predictor
         t0 = time.time()
         u = np.array([g.phys(self.us[k]) for k in range(3)])
@@ -438,17 +543,22 @@ class Solver:
         return dt
 
     # ------------------------------------------------------------------ diagnostics
-    def _budget(self, rho_n, divF, dt):
+    def _budget(self, rho_n, divF, dt, divFt=None):
         """Mass budget (kg/s, whole domain, theta-integrated) of each scalar in case.budget, accumulated as
         sums over steps (divide by the summed dt): spurious source phi^{n+1} (rho_EOS^{n+1} - rho*)/dt with
         rho* = rho^n - dt div F (the continuity density the transport assumed), convective and diffusive inflow
         through the wick faces, outflow through all other boundaries, total mass of rho phi."""
         g, c = self.g, self.c
         w = 2 * np.pi / g.Nt
-        rho_star = rho_n - dt * (divF + self.rinv * g.dth(rho_n * self.Ut))
+        if divFt is not None:      # THETA_FV: the theta mass fluxes the scalar transport used
+            rho_star = rho_n - dt * (divF + divFt)
+        else:
+            rho_star = rho_n - dt * (divF + self.rinv * g.dth(rho_n * self.Ut))
         b = self.__dict__.setdefault('bud', {})
         b['dt'] = b.get('dt', 0.0) + dt
         b['mass_err'] = b.get('mass_err', 0.0) + dt * w * (g.vol * (self.rho - rho_star))[:, g.fluid].sum() / dt
+        # part of it due to the modes m > M of S that the M-mode velocity cannot carry: -int rho (S - S_M) dV
+        b['mass_hi'] = b.get('mass_hi', 0.0) - dt * w * (g.vol * rho_n * (self._S_full - self.S))[:, g.fluid].sum()
         for s in c.budget:
             f = g.phys(self.phis[s])
             bc = c.scalar_bc[s]
@@ -487,7 +597,7 @@ class Solver:
         if not b:
             return {}
         T = b['dt']
-        out = {'mass_err': b['mass_err'] / T}
+        out = {'mass_err': b['mass_err'] / T, 'mass_hi': b['mass_hi'] / T}
         for s in self.c.budget:
             for k in ('spur', 'wick_conv', 'wick_diff', 'out'):
                 out[s + '_' + k] = b[s + '_' + k] / T
@@ -513,7 +623,7 @@ class Solver:
         np.savez_compressed(path, t=self.t, rf=g.rf, zf=g.zf, M=g.M, us=self.us, ps=self.ps, ps_old=self.ps_old,
                             Urs=g.spec(self.Ur), Uzs=g.spec(self.Uz), Uts=g.spec(self.Ut), Ss=g.spec(self.S),
                             phis=np.array([self.phis[s] for s in self.c.scalars]),
-                            scalars=np.array(self.c.scalars), **extra)
+                            scalars=np.array(self.c.scalars), theta_fv=self.fv, **extra)
 
     def load(self, path):
         d = np.load(path)
@@ -528,9 +638,11 @@ class Solver:
         u = np.array([g.phys(self.us[k]) for k in range(3)])
         phi = {}
         for s in self.c.scalars:
-            fs = np.zeros_like(self.ps)
+            fs = np.zeros((self.ns,) + self.ps.shape[1:], complex)
             if s in names:
-                fs[:M + 1] = d['phis'][names.index(s)][:M + 1]
+                src = d['phis'][names.index(s)]
+                n = min(self.ns, src.shape[0]) if int(d['M']) == g.M else M + 1
+                fs[:n] = src[:n]
             phi[s] = g.phys(fs)
         self.set_state(u, phi, float(d['t']))
         self.ps, self.ps_old = ps, pso
