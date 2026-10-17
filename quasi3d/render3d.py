@@ -295,8 +295,16 @@ def movie(snapdir, out, view='side', fps=30, **kw):
     assert files, 'no npz in ' + snapdir
     ff = find_ffmpeg(); print('ffmpeg:', ff)
     norm = None; proc = None
+    smooth = os.environ.get('NORM', 'fixed') == 'smooth'
     for i, f in enumerate(files):
-        img, norm = render(load(f), view, norm=norm, return_norm=True, **kw)   # brightness fixed by the first frame
+        if smooth:
+            # per-frame exposure, smoothed in time (log-space exponential average of the auto normalisation)
+            st = load(f)
+            _, n_auto = render(st, view, return_norm=True, **kw)
+            norm = n_auto if norm is None else tuple(np.exp(0.6 * np.log(a) + 0.4 * np.log(b)) for a, b in zip(norm, n_auto))
+            img = render(st, view, norm=norm, **kw)
+        else:
+            img, norm = render(load(f), view, norm=norm, return_norm=True, **kw)   # brightness fixed by the first frame
         h, w = img.shape[:2]
         if proc is None:
             assert w % 2 == 0 and h % 2 == 0
@@ -312,7 +320,8 @@ def movie(snapdir, out, view='side', fps=30, **kw):
 if __name__ == '__main__':
     a = sys.argv[1:]
     if a and a[0] == '--movie':
-        movie(a[1], a[2], a[3] if len(a) > 3 else 'side')
+        xr = tuple(float(v) for v in os.environ['XRANGE'].split(',')) if 'XRANGE' in os.environ else None
+        movie(a[1], a[2], a[3] if len(a) > 3 else 'side', fps=int(os.environ.get('FPS', 30)), xrange=xr)
     else:
         img = render(load(a[0]), a[2] if len(a) > 2 else 'side')
         save_png(img, a[1]); print('saved', a[1], img.shape)
