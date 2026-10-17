@@ -26,6 +26,9 @@ def mixture_fraction(Y):
     return (ZC + ZH) / (_WC + _WH)
 
 
+SM_Z0, SM_SLOPE, SM_MAX = 0.08, 0.25, float(os.environ.get('TAB_SMOOTH', 0.04))
+
+
 def state_table(nbin=400):
     """conditional means <T|Z>, <Y_i|Z> (volume weighted, wedge cells) on a Z grid clustered near Zst."""
     ref = Reference()
@@ -47,6 +50,25 @@ def state_table(nbin=400):
     tab = {'Z': zc, 'T': np.bincount(idx, w * T, len(edges) - 1)[ok] / cnt[ok]}
     for k, s in enumerate(SP5):
         tab[s] = np.bincount(idx, w * Y[k], len(edges) - 1)[ok] / cnt[ok]
+    # Rich side: few, very differently placed cells per bin (hot fuel-rich core above the wick vs cold vapour next
+    # to it) make the bin means noisy (T jumps of +-150 K between neighbouring bins at Z > 0.3), so rho(Z) was
+    # non-monotone and d ln rho/dZ (fine table) ranged from -314 to +159 at Z > 0.15. That sawtooth made S = div u
+    # a noisy function of Z (|S| 3-5x larger in the draft runs) and broke the face-density consistency of the mass
+    # fluxes (which needs 1/rho locally linear in Z): spurious fuel source 0.4-1.1e-6 kg/s at M = 4 with the draft
+    # vs 1-5e-8 smoothed. Replace the bin means by a volume-weighted local-linear regression on the cell data with
+    # a kernel width growing from 0 (Z < SM_Z0, flame zone untouched) to SM_MAX (env TAB_SMOOTH, 0 = raw means).
+    sig = np.clip(SM_SLOPE * (zc - SM_Z0), 0, SM_MAX) if SM_MAX > 0 else np.zeros_like(zc)
+    for k in np.nonzero(sig > 2e-3)[0]:
+        dz = Z - zc[k]
+        sel = np.abs(dz) < 3 * sig[k]
+        kw = w[sel] * np.exp(-0.5 * (dz[sel] / sig[k]) ** 2)
+        x = dz[sel]
+        S0, S1, S2 = kw.sum(), (kw * x).sum(), (kw * x * x).sum()
+        den = S0 * S2 - S1 ** 2
+        ll = lambda q: ((S2 * (kw * q).sum() - S1 * (kw * x * q).sum()) / den)   # local-linear value at x = 0
+        tab['T'][k] = ll(T[sel])
+        for kk, s in enumerate(SP5):
+            tab[s][k] = ll(Y[kk][sel])
     # end points: pure air / wick fuel vapour
     tab['Z'] = np.r_[0.0, tab['Z'], 1.0]
     tab['T'] = np.r_[300.0, tab['T'], 600.0]
@@ -87,7 +109,11 @@ class FlameSheet(CandleBase):
         return self.lookup('rho', phi['Z'])
 
     def dlnrho(self, phi):
-        return {'Z': self.lookup('dlnrho', phi['Z'])}
+        # consistent with the clipped density: rho(Z) is constant outside [0, 1], so d ln rho/dZ = 0 there. The
+        # clipped lookup returned d ln rho/dZ(0) = -150 for undershoots Z < 0, i.e. a spurious volume source
+        # S = 150 R_Z (R_Z: diffusion filling the undershoot) where the density does not change.
+        Z = phi['Z']
+        return {'Z': np.where((Z >= 0) & (Z <= 1), self.lookup('dlnrho', Z), 0.0)}
 
     def initial_scalars(self):
         g, ref = self.g, self.ref

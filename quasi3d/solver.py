@@ -78,7 +78,13 @@ class Solver:
         g = self.g
         phi = {s: g.phys(self.phis[s]) for s in self.c.scalars}
         rho, mu, Gam = self.c.props(phi)
-        return g.trunc(rho), mu, Gam
+        # rho is the pointwise EOS density at the collocation angles, NOT truncated to M modes. rho(Z) is very
+        # nonlinear (rho(0) = 1.17, rho(0.005) = 0.72, rho(0.05) = 0.21), so a flame sheet that is sharp in theta
+        # (draft runs) gives a rho(theta) whose M-mode truncation overshoots below zero: with M = 2 min(rho)
+        # fell from 0.18 to -0.001 within 9.6 ms of switching on the draft (lee side, r = 7 mm, z = 5 mm), and
+        # 1/rho (nu0 = 0.6 max mu/rho, buoyancy, pressure terms) blew up. The pointwise value is positive and is
+        # the same density the face mass fluxes rho_EOS(phi_f) U use; products with it are truncated afterwards.
+        return rho, mu, Gam
 
     # ------------------------------------------------------------------ helpers
     def _mode_k(self, shift):
