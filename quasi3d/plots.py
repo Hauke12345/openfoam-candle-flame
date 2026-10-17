@@ -120,8 +120,9 @@ def stage3():
     """lean vs number of modes (time-averaged over the last 50 ms) against the OpenFOAM half-3D reference"""
     rows = json.load(open(os.path.join(OUT, 'stage3_lean_summary.json')))
     fig, axs = plt.subplots(1, 2, figsize=(10, 4))
-    for ax, k, lab, ref in ((axs[0], 'cen_x_mm', 'flame centroid x (downstream, mm)', (12.0, 12.5)),
-                            (axs[1], 'cen_z_mm', 'flame centroid z (mm)', (12.0, 12.4))):
+    # OpenFOAM half-3D, same region definition (Z >= Zst, all fluid cells), t = 0.2-0.3 s (tools/of3d_flame.py)
+    for ax, k, lab, ref in ((axs[0], 'cen_x_mm', 'flame centroid x (downstream, mm)', (10.46, 10.86)),
+                            (axs[1], 'cen_z_mm', 'flame centroid z (mm)', (8.67, 9.04))):
         for scheme, mk in (('FV', 'o-'), ('clip', 's--')):
             r = [x for x in rows if x['case'].startswith(scheme)]
             Ms = [int(x['case'].split('=')[1]) for x in r]

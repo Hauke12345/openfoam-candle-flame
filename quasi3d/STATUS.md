@@ -92,11 +92,14 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
   | THETA_FV M = 8 | 11.9 ± 0.4 | 10.1 ± 0.8 | 29.4 ± 3.3 | 23.8 ± 1.2 | −2.1e-5 |
   | spectral+clip M = 8 | 12.6 ± 0.5 | 12.7 ± 0.1 | 34.4 ± 0.8 | 25.9 ± 1.3 | −2.9e-4 |
   | spectral+clip M = 12 | 12.5 ± 0.3 | 11.8 ± 0.7 | 32.6 ± 2.8 | 25.5 ± 1.0 | −2.8e-4 |
-  | OpenFOAM half-3D (0.2–0.3 s) | 12.0–12.5 | 12.0–12.4 | 23–24 | 20.1 | – |
+  | OpenFOAM half-3D (0.2–0.3 s) | 10.5–10.9 | 8.7–9.0 | 23–24 | 20.1 | – |
 
-  Verdict: the lean converges from M = 4 to M = 8 (centroid within 0.4 / 0.8 mm) and its downstream offset matches
-  OpenFOAM; the THETA_FV flame sits 2–3 mm lower. **M = 2 does not converge**: two velocity modes cannot carry the
-  flame off-axis (honest limitation; the plan's criterion "converges for M = 2/4/8" holds only for 4 → 8).
+  (OpenFOAM numbers with the SAME region definition as `flame_geometry`: Z ≥ Zst over all fluid cells; an earlier
+  version of tools/of3d_flame.py excluded z < 6 mm and gave 12.0/12.0 mm — that comparison was inconsistent, caught
+  by the validator.) Verdict (validator: PARTIAL / FAIL as worded): the centroid converges from M = 4 to 8 (x within
+  0.4 mm, z within 0.9 mm), but the tip height does not (22.6 → 29.4 mm, M = 8 still oscillating); **M = 2 does not
+  lean at all** (two velocity modes cannot carry the flame off-axis). Against OpenFOAM the THETA_FV flame sits
+  ≈ 1.4–1.8 mm (13–17 %) further downstream; centroid height agrees within ≈ 1 mm.
 
 ## Stage 4 — finite-rate chemistry (validator: m = 0 PASS; Tmax +1.4 %, tip −3.6 / +2.9 %; axis T +45 K above the flame, axis u_z 6–9 % low at 10–30 mm)
 - `chem.py` verified against Cantera (constant-pressure reactor). Strang splitting.
@@ -105,17 +108,26 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
 - Draft, pseudo-spectral + CLIP (M = 8): unphysical after 30 ms (species Gibbs: Y_O2 0.28, T 2574 K) — abandoned.
 - Draft with THETA_FV, V = 0.2 m/s, 0.2 s (out/stage4_M4_V0.2_h0.375_fv3.json; continuation chain _fv → _fv2 →
   _fv3 with DRAFT_KICK=0). M = 4, mean over the last 50 ms: Tmax 2066 ± 2 K (OpenFOAM 3D 2061), tip (z 27.8, x 25.5)
-  mm (OpenFOAM 23.2, 20.1), centroid x 13.7 ± 0.3 mm, angle 68° (→ z ≈ 11.5 mm; OpenFOAM 12.0, 12.0 mm, 63°).
-  Agrees with stage 3 THETA_FV M = 4 (centroid x 12.3, tip (22.6, 23.8)) within ≈1.5 mm in the centroid.
+  mm (OpenFOAM 23.2, 20.1), centroid x 13.7 ± 0.3 mm; final state (validator) centroid (14.1, 11.0) mm, tip angle 54°,
+  flame volume 2.76 cm³. Still drifting at t = 0.5 (centroid x 12.4 → 14.1 over the last 70 ms) → continued to 0.6 s
+  (_fv4). vs stage 3 THETA_FV M = 4 (12.3, 9.3): +15 % in x (validator: PASS for the centroid, borderline tip).
+  Physics sanity (validator): T 300–2064 K, ΣY = 1, Z_C vs Z_H within 7.6e-4, mirror-symmetric about θ = 0.
   M = 8 continuation (_fv3) running as the mode-convergence check (agreed with M = 4 at 30 ms: centroid x 5.4/5.2).
 - Open: Qchem diagnostic (ρΣhf ΔY over both Strang halves) reads ≈130 W vs ≈73 W from fuel × LHV; the solution
   (Tmax, shape) matches OpenFOAM, so this looks like a diagnostic issue — not resolved.
 
-## Stage 5 — OpenFOAM half-3D reference
+## Stage 5 — OpenFOAM half-3D reference (validator: FAIL as originally claimed — inconsistent metric, now corrected)
+- Consistent comparison (Z ≥ Zst, all fluid cells), OpenFOAM t = 0.2–0.3 s: centroid x 10.5–10.9 mm, z 8.7–9.0 mm,
+  tip (z 23–24, x 20.1) mm, tip angle 48–49°, flame volume 2.2–2.3 cm³. Stage 4 (M = 4, t = 0.5): centroid
+  (14.1, 11.0) mm (+33 % downstream), tip (26–28, 25–28) mm, tip angle ≈ 50–54° (agrees), volume 2.76 cm³.
+  So the quasi-3D flame leans the same way and with the same tip angle, but its body sits ≈ 3.5 mm further
+  downstream and its tip 4–7 mm further out/up. Both plumes reach the outer boundary (R ≈ 38 mm) above z ≈ 25 mm,
+  so the far-field lean is domain-dependent in both codes.
 - `of3d/gen3d.py`, `of3d/Allrun`, 119k cells, V = 0.2 m/s, started from the axisymmetric solution + draft
   (OpenFOAM via micromamba at /opt/mm/root/envs/of; `export CONDA_PREFIX=/opt/mm/root/envs/of
   PATH=$CONDA_PREFIX/bin:$PATH; source etc/env.sh`). `tools/of3d_flame.py CASE times` → flame geometry.
-- DONE (t = 0.3 s). Lean (Z ≥ Zst region): t = 0.05 s tip (36.1, 9.5) mm, centroid 39°; 0.1 s tip (27.3, 15.3), 55°;
+- DONE (t = 0.3 s). Numbers in this list exclude z < 6 mm (old tool version; see the consistent numbers above):
+  t = 0.05 s tip (36.1, 9.5) mm, centroid 39°; 0.1 s tip (27.3, 15.3), 55°;
   0.3 s tip (z 23.2, x 20.1) mm, centroid (x 12.0, z 12.0) mm, 63.4°, Tmax 2061 K;
   0.2 s tip (24.0, 20.1) mm, centroid (12.5, 12.4) mm, 63° (steady from ≈ 0.2 s); Tmax 2059 K; max |u| 2.18 →
   1.63 (0.12 s) → 1.95 m/s (0.24 s, at x = 37 mm, z = 83 mm: the leaning plume reaches the outer boundary).

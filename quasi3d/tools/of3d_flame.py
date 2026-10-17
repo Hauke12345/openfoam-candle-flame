@@ -14,10 +14,10 @@ for t in sys.argv[2:]:
     Y = np.array([read_field(f'{case}/{t}/{s}') for s in ['C12H26', 'O2', 'CO', 'CO2', 'H2O']])
     T = read_field(f'{case}/{t}/T')
     Z = mixture_fraction(Y)
-    ins = (Z >= 0.0621) & (z > 6e-3)
+    ins = (Z >= 0.0621)      # all fluid cells, same definition as stage3_flamesheet.flame_geometry
     w = Vc * ins
     k = np.argmax(np.where(ins, z, -1))
     xc, zc = (w * x).sum() / w.sum(), (w * z).sum() / w.sum()
     ang = lambda a, b: np.degrees(np.arctan2(a, b - 6e-3))
-    print(f't={t}: tip z {z[k]*1e3:.1f} mm x {x[k]*1e3:.1f} mm ({ang(x[k], z[k]):.1f} deg); centroid x {xc*1e3:.2f} z {zc*1e3:.2f} mm '
+    print(f't={t}: [all fluid cells] tip z {z[k]*1e3:.1f} mm x {x[k]*1e3:.1f} mm ({ang(x[k], z[k]):.1f} deg); centroid x {xc*1e3:.2f} z {zc*1e3:.2f} mm '
           f'({ang(xc, zc):.1f} deg); vol {2*w.sum()*1e6:.2f} cm3; Tmax {T.max():.0f} K')

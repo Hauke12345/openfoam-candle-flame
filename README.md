@@ -112,12 +112,13 @@ line-of-sight integration of a soot-proxy blackbody plus CH*/C₂* chemiluminesc
 |---|---|---|
 | 1 cold crossflow | uniform m = 1 draft stays uniform (< 1 %) | 0.20 % (M = 4); exact discrete steady state |
 | 2 hot plume | m = 0 axis velocity / temperature vs OpenFOAM | u_z within 3.2 %, free-plume T within 0.4 % |
-| 3 flame sheet | m = 0 tip 44 mm ± 10 %; lean converges with M | tip 45.6–46.8 mm; lean converges 4 → 8 (centroid within 0.4 mm), **not at M = 2** |
+| 3 flame sheet | m = 0 tip 44 mm ± 10 %; lean converges with M | tip 45.6–46.8 mm ✓; flame centroid converges 4 → 8 (within 0.4/0.9 mm), tip height does not (22.6 → 29.4 mm); **M = 2 does not lean** |
 | 4 finite-rate | m = 0 tip and peak T within 5 % of OpenFOAM | tip 43.1 / 46.0 mm (−3.6 / +2.9 %), Tmax 1950 K (+1.4 %) |
-| 5 reference | OpenFOAM half-3D (119k cells, symmetry plane), same draft | flame centroid x 13.7 vs 12.0 mm, tip (27.8, 25.5) vs (23.2, 20.1) mm, Tmax 2066 vs 2061 K ([figure](quasi3d/figs/stage5_compare.png)) |
+| 5 reference | OpenFOAM half-3D (119k cells, symmetry plane), same draft | same lean direction and tip angle (≈50° vs 48–49°), Tmax 2066 vs 2061 K; but the flame body sits further downstream (centroid x 14.1 vs 10.5–10.9 mm, +33 %) and the tip 4–7 mm further out/up ([figure](quasi3d/figs/stage5_compare.png)) |
 
 A 0.2 m/s draft is comparable to the flame's own buoyant velocity near its base. The flame therefore lies down along
-the wax surface and turns up into a plume about 20 mm downstream. OpenFOAM's 3D reference shows the same.
+the wax surface and turns up into a plume about 20 mm downstream. OpenFOAM's 3D reference shows the same picture,
+with the quasi-3D flame leaning somewhat further downstream (see the table).
 
 **Limits.**
 - Few modes. M = 2 cannot move the flame off-axis. M = 4–8 resolve the lean of the flame body, but the stretched outer
