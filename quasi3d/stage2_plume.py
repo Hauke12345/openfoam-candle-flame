@@ -99,10 +99,17 @@ class Forced(Thermo):
         init = self.initial_scalars()
         self.target = {s: init[s][0] for s in self.scalars}
 
+    tau = float(os.environ.get('TAU_SRC', 0.0))      # 0: hard pinning; > 0: relaxation time constant (s)
+
     def fix(self, phis, t):
+        dt = t - getattr(self, '_t_fix', t)
+        self._t_fix = t
+        a = 1.0 if self.tau <= 0 or dt <= 0 else 1 - np.exp(-dt / self.tau)
+        if self.tau > 0 and dt <= 0:
+            return
         for s in self.scalars:
-            phis[s][0][self.mask] = self.target[s][self.mask]
-            phis[s][1:, self.mask] = 0
+            phis[s][0][self.mask] += a * (self.target[s][self.mask] - phis[s][0][self.mask])
+            phis[s][1:, self.mask] *= (1 - a)
 
 
 def compare_axis(sol, case):
