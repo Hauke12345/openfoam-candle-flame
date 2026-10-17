@@ -103,9 +103,13 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
 - M = 0, refined grid, t = 0.3 s: tip 43.1 mm (5 % fuel-rate) / 46.0 mm (axis Zst) vs 44.7 ✓; Tmax 1950 vs
   1923 K (+1.4 %) ✓; steady.
 - Draft, pseudo-spectral + CLIP (M = 8): unphysical after 30 ms (species Gibbs: Y_O2 0.28, T 2574 K) — abandoned.
-- Draft with THETA_FV: physical (Tmax ≈ 2090 K vs OpenFOAM 3D 2060 K); M = 4 and M = 8 agree at 30 ms of draft
-  (centroid x 5.2 / 5.4 mm). Full 0.2 s runs (`_fv3`, snapshots every 5 ms) running: M = 4 ≈ 85 s per ms,
-  M = 8 ≈ 2× that.
+- Draft with THETA_FV, V = 0.2 m/s, 0.2 s (out/stage4_M4_V0.2_h0.375_fv3.json; continuation chain _fv → _fv2 →
+  _fv3 with DRAFT_KICK=0). M = 4, mean over the last 50 ms: Tmax 2066 ± 2 K (OpenFOAM 3D 2061), tip (z 27.8, x 25.5)
+  mm (OpenFOAM 23.2, 20.1), centroid x 13.7 ± 0.3 mm, angle 68° (→ z ≈ 11.5 mm; OpenFOAM 12.0, 12.0 mm, 63°).
+  Agrees with stage 3 THETA_FV M = 4 (centroid x 12.3, tip (22.6, 23.8)) within ≈1.5 mm in the centroid.
+  M = 8 continuation (_fv3) running as the mode-convergence check (agreed with M = 4 at 30 ms: centroid x 5.4/5.2).
+- Open: Qchem diagnostic (ρΣhf ΔY over both Strang halves) reads ≈130 W vs ≈73 W from fuel × LHV; the solution
+  (Tmax, shape) matches OpenFOAM, so this looks like a diagnostic issue — not resolved.
 
 ## Stage 5 — OpenFOAM half-3D reference
 - `of3d/gen3d.py`, `of3d/Allrun`, 119k cells, V = 0.2 m/s, started from the axisymmetric solution + draft
@@ -116,8 +120,16 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
   0.2 s tip (24.0, 20.1) mm, centroid (12.5, 12.4) mm, 63° (steady from ≈ 0.2 s); Tmax 2059 K; max |u| 2.18 →
   1.63 (0.12 s) → 1.95 m/s (0.24 s, at x = 37 mm, z = 83 mm: the leaning plume reaches the outer boundary).
 
-## Stage 6 — render: `render3d.py` (line-of-sight soot proxy + chemiluminescence, MP4 via system ffmpeg), tested.
+## Stage 6 — render: done (pending validator)
+- `render3d.py`: line-of-sight soot-proxy blackbody + chemiluminescence through the reconstructed 3D field, THETA_FV
+  scalars interpolated linearly in θ. Movie `figs/candle_draft_quasi3d.mp4` (H.264, yuv420p, 400×640, 12 fps, 41
+  frames: M = 0 state at t = 0.30, then every 5 ms of the M = 4 THETA_FV draft run to t = 0.50); exposure smoothed
+  per frame (NORM=smooth; the leaning flame's chemiluminescence peak is ~30× the upright one). Frames:
+  `out/movie_frames` (symlinks). Still strip `figs/candle_draft_strip.png`. README section written.
 
 ## Next
+- M = 8 stage-4 draft continuation → mode convergence for stage 4; validator for stages 4–6.
+- Optional: redo the stage-2 draft run with THETA_FV and a relaxed source (TAU_SRC=0.005).
+
 Conservation fix → re-validate stage 3 (tip, M = 2/4/8 lean) and stage 4 (m = 0) → stage 4 draft runs → compare with
 stage 5 → render/MP4/README.
