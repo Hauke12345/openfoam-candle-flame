@@ -26,6 +26,8 @@ class Chemistry(Thermo):
         Y5 = Y[:5].reshape(5, -1)
         Y5n, Tn, q, nsub = chem.react(Y5, T.ravel(), dt)
         Yn = mech.full_Y(Y5n)
+        # heat release over the step from the change of formation enthalpy (exact for the integrated step)
+        q = rho.ravel() * np.tensordot(mech.HF, Y.reshape(6, -1) - Yn, 1) / dt
         hs = mech.hs_mix(Tn, Yn).reshape(shp)
         # radiation (explicit, lagged composition): optically thin grey CO2/H2O
         hs = hs + dt * mech.q_rad_thin(Tn.reshape(shp), Yn.reshape((6,) + shp)) / rho
