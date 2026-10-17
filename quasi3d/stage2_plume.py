@@ -24,6 +24,7 @@ class Thermo(CandleBase):
     def __init__(self, g, V=0.0, **kw):
         super().__init__(g, V, **kw)
         self.scalars = ['hs'] + SP5
+        self.bounds = {s: (0.0, 1.0) for s in SP5}
         Yair, Yfuel = mech.full_Y(Y_AIR5[:, None])[:, 0], mech.full_Y(Y_FUEL5[:, None])[:, 0]
         self.hs_air = float(mech.hs_mix(np.array(T_AIR), Yair))
         self.hs_wick = float(mech.hs_mix(np.array(T_WICK), Yfuel))

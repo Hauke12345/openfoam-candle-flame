@@ -39,6 +39,7 @@ class Solver:
         self.f = Factor(g)
         self.cfl, self.dt_max, self.ab2, self.beta = cfl, dt_max, ab2, beta
         self.mismatch = 0.0
+        self.clip = bool(int(__import__('os').environ.get('CLIP', '0')))
         self.r_theta_min = r_theta_min if r_theta_min is not None else 4 * g.rc[0]
         self.t, self.n = 0.0, 0
         sh = (g.M + 1, g.Nz, g.Nr)
@@ -359,6 +360,12 @@ class Solver:
             self.phis = {s: g.spec(phi[s]) for s in c.scalars}
         if hasattr(c, 'fix'):
             c.fix(self.phis, t1)
+        # bound preservation (opt-in, case.bounds = {name: (lo, hi)}): clip at the collocation angles and project the
+        # correction back onto the M modes; damps the Gibbs ringing of sharp fronts in theta at low M
+        if self.clip:
+            for s, (lo, hi) in getattr(c, 'bounds', {}).items():
+                f = g.phys(self.phis[s])
+                self.phis[s] = self.phis[s] + g.spec(np.clip(f, lo, hi) - f)
         self.timing['src'] += time.time() - t0
         # 2. equation of state and divergence constraint from the non-advective scalar rates
         rho_n = self.rho

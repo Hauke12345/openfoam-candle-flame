@@ -91,6 +91,7 @@ class FlameSheet(CandleBase):
     def __init__(self, g, V=0.0, Sc=0.7, **kw):
         super().__init__(g, V, **kw)
         self.scalars = ['Z']
+        self.bounds = {'Z': (0.0, 1.0)}
         self.Sc = Sc
         self.tab = state_table()
         self.scalar_bc = {'Z': BC({WICK}, 1.0, *self.scalar_face_arrays(0.0, 1.0), solid_fill=1.0,
