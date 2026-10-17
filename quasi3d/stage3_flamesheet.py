@@ -129,12 +129,16 @@ if __name__ == '__main__':
     class Case(FlameSheet):
         def __init__(self, g, V, **kw):
             super().__init__(g, V, Sc=Sc, **kw)
+            self.budget = ['Z']
+            self.budget_planes = (0.008, 0.012, 0.02, 0.03, 0.045)
 
     def extra(sol, case):
         Z = sol.g.phys(sol.phis['Z'])
         info = flame_geometry(sol.g, Z)
         info['tip_axis_mm'] = float(tip_height(sol.g, Z) * 1e3)
-        return {k: round(v, 3) for k, v in info.items()}
+        info = {k: round(v, 3) for k, v in info.items()}
+        info.update({k: float('%.4g' % v) for k, v in sol.budget_report().items()})
+        return info
     cfl = float(os.environ.get("CFL", 0.4))
     tag += os.environ.get("TAG", "")
     sol, case, hist = run(Case, M, V, t_end, hr, hz, restart, tag, extra=extra, every=0.01, cfl=cfl)

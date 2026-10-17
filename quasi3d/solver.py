@@ -287,7 +287,7 @@ class Solver:
         divF = self._mass_fluxes()    # (r, z) part only: theta advection is in advective form
         # 1. scalars (Strang: half source step before and after transport if case.strang)
         t0 = time.time()
-        old = self.phis
+        old = self._last_phi_n = self.phis
         strang = getattr(c, 'strang', False)
         if strang:
             phi = {s: g.phys(self.phis[s]) for s in c.scalars}
@@ -338,6 +338,8 @@ class Solver:
             self.mismatch = np.abs((rho_star - self.rho) / self.rho)[:, g.fluid].max()
         S[:, g.solid] = 0
         self.S = g.trunc(S)
+        if getattr(c, 'budget', None):
+            self._budget(rho_n, divF, dt)
         # 3. momentum predictor
         t0 = time.time()
         u = np.array([g.phys(self.us[k]) for k in range(3)])
@@ -388,6 +390,68 @@ class Solver:
         self.dt_prev = dt
         self.n += 1
         return dt
+
+    # ------------------------------------------------------------------ diagnostics
+    def _budget(self, rho_n, divF, dt):
+        """Mass budget (kg/s, whole domain, theta-integrated) of each scalar in case.budget, accumulated as
+        sums over steps (divide by the summed dt): spurious source phi^{n+1} (rho_EOS^{n+1} - rho*)/dt with
+        rho* = rho^n - dt div F (the continuity density the transport assumed), convective and diffusive inflow
+        through the wick faces, outflow through all other boundaries, total mass of rho phi."""
+        g, c = self.g, self.c
+        w = 2 * np.pi / g.Nt
+        rho_star = rho_n - dt * (divF + self.rinv * g.dth(rho_n * self.Ut))
+        b = self.__dict__.setdefault('bud', {})
+        b['dt'] = b.get('dt', 0.0) + dt
+        b['mass_err'] = b.get('mass_err', 0.0) + dt * w * (g.vol * (self.rho - rho_star))[:, g.fluid].sum() / dt
+        for s in c.budget:
+            f = g.phys(self.phis[s])
+            bc = c.scalar_bc[s]
+            Gs = self.Gam[s] if isinstance(self.Gam, dict) else self.Gam
+            spur = w * (g.vol * f * (self.rho - rho_star))[:, g.fluid].sum() / dt
+            fold = g.phys(self._last_phi_n[s])
+            fr, fz = muscl_faces(g, fold, self.Ur, self.Uz, bc)
+            _, gr, _, gz = faces(g, fold, bc)
+            Gr, Gz = interp_faces(g, Gs)
+            win = wdif = out = 0.0
+            for fam, F, fv, gv, Gv in (('r', self.Fr, fr, gr, Gr), ('z', self.Fz, fz, gz, Gz)):
+                for L, bf in g.bfaces[fam].items():
+                    j, i = bf['j'], bf['i']
+                    A = g.rf[i] * g.dz[j] if fam == 'r' else g.rc[i] * g.dr[i]
+                    # flux in +r/+z direction; inflow into the fluid = -s * flux
+                    conv = -bf['s'] * F[:, j, i] * fv[:, j, i] * A
+                    dif = bf['s'] * Gv[:, j, i] * gv[:, j, i] * A
+                    if L == WICK:
+                        win += w * conv.sum(); wdif += w * dif.sum()
+                    else:
+                        out -= w * (conv + dif).sum()
+            for zp in getattr(c, 'budget_planes', ()):
+                j = int(np.argmin(abs(g.zf - zp)))
+                A = g.rc * g.dr
+                pl = w * ((self.Fz[:, j] * fz[:, j] - Gz[:, j] * gz[:, j]) * A).sum()
+                b[s + '_z%.0f' % (zp * 1e3)] = b.get(s + '_z%.0f' % (zp * 1e3), 0.0) + dt * pl
+            tot = w * (g.vol * self.rho * f)[:, g.fluid].sum()
+            for k, v in (('spur', spur), ('wick_conv', win), ('wick_diff', wdif), ('out', out)):
+                b[s + '_' + k] = b.get(s + '_' + k, 0.0) + dt * v
+            if s + '_mass0' not in b:
+                b[s + '_mass0'] = w * (g.vol * rho_n * fold)[:, g.fluid].sum()
+            b[s + '_mass1'] = tot
+
+    def budget_report(self, reset=True):
+        b = getattr(self, 'bud', None)
+        if not b:
+            return {}
+        T = b['dt']
+        out = {'mass_err': b['mass_err'] / T}
+        for s in self.c.budget:
+            for k in ('spur', 'wick_conv', 'wick_diff', 'out'):
+                out[s + '_' + k] = b[s + '_' + k] / T
+            out[s + '_dMdt'] = (b[s + '_mass1'] - b[s + '_mass0']) / T
+            for zp in getattr(self.c, 'budget_planes', ()):
+                k = s + '_z%.0f' % (zp * 1e3)
+                out[k] = b[k] / T
+        if reset:
+            self.bud = {}
+        return out
 
     # ------------------------------------------------------------------ output
     def fields(self):
