@@ -103,19 +103,40 @@ class CandleBase:
             return 0.0
         return self.V0 * np.clip((t - self.t_on) / self.t_ramp, 0, 1)
 
+    def draft(self, t):
+        """horizontal draft vector (Vx, Vy) in m/s. Default: steady V along +x (ramped). GUST=<rms m/s> env: a gentle
+        wandering 'restaurant table' draft — each component a sum of 4 incommensurate sinusoids (0.6-3.4 Hz),
+        ramped in over 0.3 s from GUST_T0 (default 0.3 s); a uniform draft of any direction is pure m = 1."""
+        rms = float(os.environ.get('GUST', 0))
+        if rms <= 0:
+            return self.V(t), 0.0
+        if not hasattr(self, '_gust'):
+            rng = np.random.default_rng(int(os.environ.get('GUST_SEED', 3)))
+            f = np.array([0.6, 1.1, 1.9, 3.4])
+            a = 1 / np.sqrt(f); a *= rms * np.sqrt(2) / np.sqrt((a ** 2).sum() * 2)   # rms of |V| ~ rms
+            self._gust = (f, a, rng.uniform(0, 2 * np.pi, (2, 4)))
+        f, a, ph = self._gust
+        ramp = np.clip((t - float(os.environ.get('GUST_T0', 0.3))) / 0.3, 0, 1)
+        vx = ramp * (a * np.sin(2 * np.pi * f * t + ph[0])).sum()
+        vy = ramp * (a * np.sin(2 * np.pi * f * t + ph[1])).sum()
+        return float(vx), float(vy)
+
     def vel_bc(self, t):
-        g, v = self.g, self.V(t)
+        g = self.g
+        vx, vy = self.draft(t)
+        # uniform horizontal draft in cylindrical components: u_r = Vx cos + Vy sin, u_th = -Vx sin + Vy cos
+        dr_, dt_ = vx * self.cos + vy * self.sin, -vx * self.sin + vy * self.cos
         shr, shz = (g.Nt, g.Nz, g.Nr + 1), (g.Nt, g.Nz + 1, g.Nr)
         vr = [np.zeros(shr) for _ in range(3)]
         vz = [np.zeros(shz) for _ in range(3)]
         # outer cylinder
-        vr[0][..., -1] = self.ur_out[None] + v * self.cos[..., 0]
-        vr[1][..., -1] = -v * self.sin[..., 0]
+        vr[0][..., -1] = self.ur_out[None] + dr_[..., 0]
+        vr[1][..., -1] = dt_[..., 0]
         vr[2][..., -1] = self.uz_out[None]
         # bottom: open part carries entrainment + draft, pool no-slip
         op = g.lz[0] == OPEN
-        vz[0][:, 0, op] = self.ur_bot[op] + v * self.cos[:, 0]
-        vz[1][:, 0, op] = -v * self.sin[:, 0]
+        vz[0][:, 0, op] = self.ur_bot[op] + dr_[:, 0]
+        vz[1][:, 0, op] = dt_[:, 0]
         vz[2][:, 0, op] = self.uz_bot[op]
         # wick: normal injection of fuel vapour at 600 K: volume flux mdot''/rho_w. The solver's face mass flux
         # rho_EOS(face state) U uses the Dirichlet fuel state on this face, so it carries exactly mdot''.

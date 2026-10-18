@@ -8,6 +8,8 @@ Usage (either the bpy Python module or the Blender app):
   blender -b -P blender_scene.py -- MODE RES_X RES_Y SAMPLES OUT [extra]
   MODE: beauty | soot | chem   -> OUT is a .png; optional extra "x0,y0,x1,y1" renders only that pixel region
         anim                   -> OUT is a folder; extra = number of frames (seamless flicker loop)
+        q3d                    -> OUT is a folder; extra = atlas dir from quasi3d/export_q3d.py [first [step [last]]]:
+                                  the simulated quasi-3D flame (real lean/flicker), one frame per snapshot
   Set CANDLE_GPU=1 to render on an NVIDIA GPU (OptiX, falling back to CUDA).
 """
 import sys, math, numpy as np, bpy, os
@@ -116,8 +118,16 @@ def load_img(name, arr):
     img.pixels.foreach_set(rgba.ravel())
     img.update()
     return img
-soot_img = load_img('soot', np.load(f'{FD}/soot_rgb.npy'))
-chem_img = load_img('chem', np.load(f'{FD}/chem_rgb.npy'))
+Q3D = MODE == 'q3d'
+if Q3D:
+    import json
+    QD = sys.argv[6]
+    QM = json.load(open(os.path.join(QD, 'meta.json')))
+    soot_img = load_img('soot', np.load(os.path.join(QD, 'soot_0000.npy')))
+    chem_img = load_img('chem', np.load(os.path.join(QD, 'chem_0000.npy')))
+else:
+    soot_img = load_img('soot', np.load(f'{FD}/soot_rgb.npy'))
+    chem_img = load_img('chem', np.load(f'{FD}/chem_rgb.npy'))
 RMAX, ZMAX = 1.5, 7.0
 bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=RMAX, depth=ZMAX, location=(0, 0, ZMAX / 2))
 dom = bpy.context.object; dom.name = 'flame'
@@ -148,9 +158,35 @@ uv = N.new('ShaderNodeCombineXYZ'); Lk.new(u.outputs[0], uv.inputs[0]); Lk.new(v
 def tex(img):
     t = N.new('ShaderNodeTexImage'); t.image = img; t.interpolation = 'Linear'; t.extension = 'CLIP'
     Lk.new(uv.outputs[0], t.inputs['Vector']); return t
-ts, tch = tex(soot_img), tex(chem_img)
-ms = N.new('ShaderNodeVectorMath'); ms.operation = 'SCALE'; Lk.new(ts.outputs['Color'], ms.inputs[0]); ms.inputs['Scale'].default_value = K_SOOT
-mc = N.new('ShaderNodeVectorMath'); mc.operation = 'SCALE'; Lk.new(tch.outputs['Color'], mc.inputs[0]); mc.inputs['Scale'].default_value = K_CHEM
+def vscale(vec_out, s):
+    n = N.new('ShaderNodeVectorMath'); n.operation = 'SCALE'; Lk.new(vec_out, n.inputs[0])
+    if isinstance(s, (int, float)): n.inputs['Scale'].default_value = s
+    else: Lk.new(s, n.inputs['Scale'])
+    return n.outputs[0]
+def vadd(a, b):
+    n = N.new('ShaderNodeVectorMath'); n.operation = 'ADD'; Lk.new(a, n.inputs[0]); Lk.new(b, n.inputs[1]); return n.outputs[0]
+if not Q3D:
+    ts, tch = tex(soot_img), tex(chem_img)
+    soot_col, chem_col = ts.outputs['Color'], tch.outputs['Color']
+else:
+    # atlas lookup: tile k holds the (z, r) emission at theta_k = 2 pi k / Nt; linear interpolation in theta
+    Nt, nr = QM['Nt'], QM['nr']
+    theta = op('ADD', op('ARCTAN2', sep.outputs[1], sep.outputs[0]), 2 * math.pi)
+    kf = op('DIVIDE', op('MODULO', theta, 2 * math.pi), 2 * math.pi / Nt)
+    k0 = op('FLOOR', kf, 0.0); wth = op('SUBTRACT', kf, k0)
+    k1 = op('MODULO', op('ADD', k0, 1.0), float(Nt))
+    rn = op('MINIMUM', op('MAXIMUM', u.outputs[0], 0.5 / nr), 1 - 0.5 / nr)
+    inside = op('LESS_THAN', u.outputs[0], 1.0)
+    def tex_at(img, k):
+        uu = op('DIVIDE', op('ADD', k, rn), float(Nt))
+        c = N.new('ShaderNodeCombineXYZ'); Lk.new(uu, c.inputs[0]); Lk.new(v.outputs[0], c.inputs[1])
+        t = N.new('ShaderNodeTexImage'); t.image = img; t.interpolation = 'Linear'; t.extension = 'CLIP'
+        Lk.new(c.outputs[0], t.inputs['Vector']); return t.outputs['Color']
+    w0 = op('MULTIPLY', op('SUBTRACT', 1.0, wth), inside); w1 = op('MULTIPLY', wth, inside)
+    soot_col = vadd(vscale(tex_at(soot_img, k0), w0), vscale(tex_at(soot_img, k1), w1))
+    chem_col = vadd(vscale(tex_at(chem_img, k0), w0), vscale(tex_at(chem_img, k1), w1))
+ms = N.new('ShaderNodeVectorMath'); ms.operation = 'SCALE'; Lk.new(soot_col, ms.inputs[0]); ms.inputs['Scale'].default_value = K_SOOT
+mc = N.new('ShaderNodeVectorMath'); mc.operation = 'SCALE'; Lk.new(chem_col, mc.inputs[0]); mc.inputs['Scale'].default_value = K_CHEM
 addn = N.new('ShaderNodeVectorMath'); addn.operation = 'ADD'; Lk.new(ms.outputs[0], addn.inputs[0]); Lk.new(mc.outputs[0], addn.inputs[1])
 em = N.new('ShaderNodeEmission'); Lk.new(addn.outputs[0], em.inputs['Color']); em.inputs['Strength'].default_value = 1.0
 out = N.new('ShaderNodeOutputMaterial'); Lk.new(em.outputs[0], out.inputs['Volume'])
@@ -160,7 +196,7 @@ for attr, val in [('volume_step_rate', 0.1), ('homogeneous_volume', False)]:
 dom.visible_shadow = False
 
 # the flame's light on the scene (point light at the luminous zone, colour of ~1900 K soot)
-lw = {'beauty': 1.0, 'anim': 1.0, 'soot': 1.0, 'chem': 0.04}[MODE]
+lw = {'beauty': 1.0, 'anim': 1.0, 'q3d': 1.0, 'soot': 1.0, 'chem': 0.04}[MODE]
 bpy.ops.object.light_add(type='POINT', location=(0, 0, 3.0))
 LT = bpy.context.object; lt = LT.data; lt.energy = 1500.0 * lw; lt.shadow_soft_size = 0.4; lt.color = (1.0, 0.58, 0.26)
 dom_light_hidden = True
@@ -209,14 +245,33 @@ cam.rotation_euler = (math.atan2(math.hypot(d[0], d[1]), -d[2]), 0, math.atan2(d
 cam.data.dof.use_dof = True; cam.data.dof.focus_distance = float(np.linalg.norm(d)); cam.data.dof.aperture_fstop = 5.6 / 100   # scene is in cm
 cam.data.clip_start = 0.5; cam.data.clip_end = 500
 
-if MODE != 'anim' and len(sys.argv) > 6:          # border render: x0,y0,x1,y1 in pixels from the top-left
+if MODE not in ('anim', 'q3d') and len(sys.argv) > 6:          # border render: x0,y0,x1,y1 in pixels from the top-left
     x0, y0, x1, y1 = [float(t) for t in sys.argv[6].split(',')]
     sc.render.use_border = True; sc.render.use_crop_to_border = True
     sc.render.border_min_x, sc.render.border_max_x = x0 / RX, x1 / RX
     sc.render.border_min_y, sc.render.border_max_y = 1 - y1 / RY, 1 - y0 / RY
 sc.render.filepath = OUT
 sc.render.image_settings.file_format = 'PNG'
-if MODE != 'anim':
+if Q3D:                         # simulated quasi-3D flame: one frame per snapshot, textures and light from the data
+    os.makedirs(OUT, exist_ok=True)
+    first = int(sys.argv[7]) if len(sys.argv) > 7 else 0
+    step = int(sys.argv[8]) if len(sys.argv) > 8 else 1
+    last = int(sys.argv[9]) if len(sys.argv) > 9 else len(QM['frames'])
+    E0 = lt.energy; Z0 = 3.0
+    c0 = QM['frames'][0]['centroid']
+    for fr in QM['frames'][first:last:step]:
+        k = fr['k']
+        for img, name in ((soot_img, 'soot'), (chem_img, 'chem')):
+            a = np.load(os.path.join(QD, f'{name}_{k:04d}.npy'))
+            rgba = np.concatenate([a, np.ones(a.shape[:2] + (1,), np.float32)], axis=2)
+            img.pixels.foreach_set(rgba.ravel()); img.update()
+        cx, cy, cz = fr['centroid']                        # m -> cm, light follows the soot glow
+        LT.location = (cx * 100, cy * 100, Z0 + (cz - c0[2]) * 100)
+        lt.energy = E0 * fr['lum_rel']
+        sc.render.filepath = f'{OUT}/f{k:04d}.png'
+        bpy.ops.render.render(write_still=True)
+        print('frame', k, 't', fr['t'], flush=True)
+elif MODE != 'anim':
     bpy.ops.render.render(write_still=True)
     print('rendered', OUT)
 else:                          # seamless loop; frame 0 is the undisturbed simulated flame
