@@ -53,11 +53,18 @@ B = caption(crop_b, 'Together', 'Yellow soot glow above, blue reaction zone at t
 P1, P2, P3 = panel('p_reaction'), panel('p_temperature'), panel('p_flow')
 
 import glob
-ANIM = [Image.open(p).convert('RGB').resize((GW, GH), Image.LANCZOS) for p in sorted(glob.glob(f'{D}/blend/anim/f*.png'))]
-def flicker(loops, ms=60):
+# flicker sequence: ANIM_DIR (default blend/anim, the stylised sway loop) or e.g. blend/q3d, the simulated quasi-3D
+# flame in a gentle table draft (real physics, one frame per 1/30 s: ANIM_MS=33.3 plays it in real time)
+ANIM_DIR = os.environ.get('ANIM_DIR', f'{D}/blend/anim')
+ANIM_MS = float(os.environ.get('ANIM_MS', 60))
+ANIM_CAP = os.environ.get('ANIM_CAPTION')
+ANIM = [Image.open(p).convert('RGB').resize((GW, GH), Image.LANCZOS) for p in sorted(glob.glob(f'{ANIM_DIR}/f*.png'))]
+if ANIM_CAP:
+    ANIM = [caption(im, *ANIM_CAP.split('|')) for im in ANIM]
+def flicker(loops, ms=ANIM_MS):
     for _ in range(loops):
         for im in ANIM: frames.append(im); durs.append(ms)
-flicker(2)
+flicker(int(os.environ.get('ANIM_LOOPS', 2)))
 fade(ANIM[0], full_small, 3, 60)
 zoom()
 fade(crop_b, A, 4); hold(A, 1800)
