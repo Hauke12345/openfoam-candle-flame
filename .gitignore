@@ -24,3 +24,5 @@ kettle/*_preview.mp4
 kettle/*.log
 boiler/interface/run*/
 boiler/interface/frames*/
+boiler/interface/*_preview.mp4
+boiler/interface/*.log
