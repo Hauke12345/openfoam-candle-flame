@@ -37,7 +37,7 @@ def inset(d):
     ax.clear()
     NR, NZ = T.shape; R, H = 0.070, 0.110
     im1 = ax.imshow(T[::-1].T, extent=(-R * 100, 0, 0, H * 100), origin='lower', cmap='inferno', vmin=20, vmax=101)
-    im2 = ax.imshow(C.T, extent=(0, R * 100, 0, H * 100), origin='lower', cmap='Blues_r', vmin=0, vmax=1.05)
+    im2 = ax.imshow(C.T, extent=(0, R * 100, 0, H * 100), origin='lower', cmap='viridis', vmin=0.5, vmax=1.0)
     ax.axvline(0, color='w', lw=0.6)
     ax.set_xlim(-R * 100, R * 100); ax.set_ylim(0, H * 100); ax.axis('off')
     ax.set_title('CFD cut: temperature | dissolved air', fontsize=8, color='w')
@@ -71,7 +71,7 @@ for f in info:
     air = float(np.mean(d['C'].astype(float))) / 0.82 * 100
     dr.rectangle((0, H - 38, W, H), fill=(6, 7, 10, 150))
     dr.text((18, H - 30), f'{int(t // 60)}:{t % 60:04.1f}   ({mode})     water {f["Tm"]:5.1f} °C     dissolved air {air:3.0f} %'
-            f'     1.7 L, 2 kW', font=F2, fill=(214, 218, 226))
+            f'     bubbles < 0.5 mm drawn enlarged', font=F2, fill=(214, 218, 226))
     proc.stdin.write(np.asarray(im).tobytes()); n += 1
 proc.stdin.close(); proc.wait()
 print('wrote', out, n, 'frames', f'{n / FPS:.1f} s')
