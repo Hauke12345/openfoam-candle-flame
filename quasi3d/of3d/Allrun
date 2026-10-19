@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Stage-5 half-3D reference run: generate, mesh, init from the axisymmetric solution, run parallel, reconstruct.
+#   NP=4 DRAFT_V=0.2 CASE=... ./Allrun        (needs CONDA_PREFIX of the OpenFOAM env set)
+set -euo pipefail
+cd "$(dirname "$0")"; HERE=$PWD
+source "$HERE/../../etc/env.sh"
+NP=${NP:-4}; CASE=${CASE:-$HERE/case}; export DRAFT_V=${DRAFT_V:-0.2}
+python3 gen3d.py "$CASE"
+cd "$CASE"
+blockMesh > log.blockMesh
+checkMesh > log.checkMesh; grep -E "cells:|Max skewness|non-orthogonality Max|Mesh OK|Failed" log.checkMesh
+python3 "$HERE/gen3d.py" "$CASE" --init
+foamDictionary -entry numberOfSubdomains -set "$NP" system/decomposeParDict > /dev/null
+decomposePar -force > log.decomposePar
+mpirun -np "$NP" rhoReactingBuoyantFoam -parallel > log.rhoReactingBuoyantFoam 2>&1
+reconstructPar > log.reconstructPar

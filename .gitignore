@@ -5,3 +5,13 @@ blend/
 gif/
 out/
 *.log
+!quasi3d/out/
+quasi3d/out/*.npz
+quasi3d/out/*.npy
+quasi3d/out/*.log
+quasi3d/out/snap_*/
+blend/
+quasi3d/out/q3d_atlas/
+quasi3d/out/gust_good/
+quasi3d/out/movie_frames/
+quasi3d/out/of3d_frames/
