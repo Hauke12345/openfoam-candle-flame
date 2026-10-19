@@ -9,8 +9,21 @@ A molecular-dynamics picture of what happens at the bottom of a kettle before it
    wall (amber; a stand-in for a scratch or a scale deposit), where water holds on less strongly.
 2. **A gas nanobubble on the spot.** From about 2 ns (95 °C), 28–41 N₂ form a stable pocket of
    ~3.5–5 nm³ on the patch. The glass-like part of the wall stays wetted.
-3. **Superheating.** Above the boiling point, water evaporates into this pre-existing gas pocket.
-   That is why kettles boil from fixed spots on the wall: nucleation needs a seed.
+3. **What comes next (not reachable in this box).** Above the boiling point, water evaporates into such
+   pre-existing gas pockets. That is why kettles boil from fixed spots on the wall: nucleation needs a seed.
+
+Movie: `media/boiler_bubble.mp4` (phases 1–2, front half of the water cut away). Plot: `degas_analysis.png`.
+
+**Superheating tried, and why the bubble does not grow here.** Two follow-up runs started from the nanobubble at 95 °C:
+- 368 → 460 K over 2 ns. The pocket breaks up (largest N₂ cluster 28 → ~4), and the water-free volume
+  stays ~3 nm³. The water evaporates at the free surface instead.
+- A fast ramp of 368 → 600 K over 1.5 ns (`superheat_analysis.png`). The space over the patch only fluctuates
+  (3–7 nm³). Near 600 K the whole slab expands to ~0.5 g/cm³ and fills the box: SPC/E approaches its
+  critical point before the patch nucleates a bubble.
+
+The reason is the Laplace pressure 2γ/r ≈ 100 MPa of a 1–2 nm pocket. A vapour bubble grows only once it is
+above the critical radius, which at a few kelvin of superheat is micrometres: the size of the gas pockets
+trapped in real wall scratches. MD shows how the seed forms; its growth needs a continuum (e.g. OpenFOAM VOF) model.
 
 Dissolved air is neutral N₂/O₂, not ions. Only CO₂ partly reacts to bicarbonate, which is the limescale
 chemistry; classical MD cannot do that reaction.

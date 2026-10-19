@@ -15,7 +15,8 @@ F2 = ImageFont.truetype(f'{fdir}/DejaVuSans.ttf', 17)
 CAPS = {
     'degas': [(0.0, 'Heating the kettle: 20 → 95 °C', 'Dissolved air (blue, N₂) comes out of solution as the water warms'),
               (0.5, 'Gas gathers on the less-wetting spot', 'Amber patch = a scratch / scale spot; the glass-like wall stays wetted'),
-              (1.2, 'A gas nanobubble sits on the patch', 'Water pulls back from the patch; some gas also escapes at the surface')],
+              (1.2, 'A gas nanobubble sits on the patch', 'Water pulls back from the patch; some gas also escapes at the surface'),
+              (2.6, 'This trapped gas is the seed of a boiling bubble', 'At 100 °C vapour grows into such pockets (µm-sized in a real kettle, beyond this box)')],
     'boil': [(0.0, 'Superheating: water evaporates into the gas pocket', 'The trapped gas is the seed of the boiling bubble'),
              (2.0, 'The seed grows into a vapour bubble', 'Without a seed the same water would stay liquid much longer')],
 }
