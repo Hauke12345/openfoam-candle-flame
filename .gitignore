@@ -22,3 +22,5 @@ kettle/run*/
 kettle/frames*/
 kettle/*_preview.mp4
 kettle/*.log
+boiler/interface/run*/
+boiler/interface/frames*/
