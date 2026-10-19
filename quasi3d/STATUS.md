@@ -139,6 +139,21 @@ envelope (T > 1200 K or Y_fuel > 0.01, z < 46 mm) T and Y are held at the OpenFO
   per frame (NORM=smooth; the leaning flame's chemiluminescence peak is ~30× the upright one). Frames:
   `out/movie_frames` (symlinks). Still strip `figs/candle_draft_strip.png`. README section written.
 
+
+## Real-physics flicker video (after the stages)
+- Goal: replace the Blender video's hand-made sway with the simulated flame. `candle.py` draft(t): `GUST=<rms m/s>`
+  gives a wandering table draft (4 incommensurate sinusoids per component, ramp from GUST_T0). `export_q3d.py`
+  writes per-frame emission atlases (soot proxy + chemiluminescence ~ ρχ at Zst, one tile per solver angle);
+  `blender_scene.py q3d` looks them up by (r, z, θ); `make_gif.py` takes ANIM_DIR/ANIM_MS/ANIM_LOOPS/ANIM_CAPTION.
+- Stage-3 M = 4 THETA_FV, GUST = 0.035 m/s (rms; peak ≈ 5 cm/s), 30 snapshots/s: physical until t ≈ 1.0 s (tip
+  42–50 mm, sway 1–4 mm), then the plume weakens (max |u| 2.1 → 1.0 m/s) and the flame collapses to a 13–30 mm blob
+  by t ≈ 2 s — unphysical for a few cm/s draft. The mass mismatch grows with the m ≥ 1 activity (−4e-6 → −3e-5
+  kg/s). Controls: M = 0 without draft is stable for 2 s (tip 41–51 mm, |u| 2.1 m/s, mismatch ~1e-6); M = 4 with a
+  10× weaker draft (3.5 mm/s) stays healthy over 0.7 s (offsets ≤ 0.2 mm). So it is not a spontaneous instability
+  but the THETA_FV/spectral divergence inconsistency integrated over seconds — open problem for long 3D runs.
+- Video built from the valid frames (t = 0.33–1.03 s, 22 frames): `blend/q3d`, `out/candle_physics_q3d.mp4`.
+  Test of a weaker gust (0.02 m/s) running (`_gust2`).
+
 ## Next
 - M = 8 stage-4 draft continuation → mode convergence for stage 4; validator for stages 4–6.
 - Optional: redo the stage-2 draft run with THETA_FV and a relaxed source (TAU_SRC=0.005).
