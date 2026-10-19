@@ -1,6 +1,6 @@
 """Blender close-up of the bubble wall (water surface + gas at 1 atm) from build_interface.py runs.
 
-The view looks down at ~30 degrees onto the water surface from inside the gas. The box is tiled 3 x 3 laterally
+The view looks along the water surface (slightly down) from inside the gas. The box is tiled 3 x 3 laterally
 (periodic images) so the surface looks extended. Only the top ~1.5 nm of the liquid is drawn (the rest is hidden).
 Colours: water O red / H white (vapour molecules in the gas glow slightly), N2 blue, O2 green, Ar violet.
 usage: python3 render_interface.py RUNDIR OUTDIR [RX=960] [RY=540] [SPP=16] [first=0] [last=-1] [stride=1]
@@ -79,9 +79,9 @@ zmid = 0.5 * sum(meta['slab'])
 oz_u = oz[np.abs(oz - zmid) < 4]
 z_s = float(np.percentile(oz_u, 98))           # upper liquid surface
 c = LX / 2
-bpy.ops.object.camera_add(location=(c, c - 13.0, z_s + 8.0))
-cam = bpy.context.object; sc.camera = cam; cam.data.lens = 30; cam.data.clip_end = 300
-tgt = np.array([c, c + 1.0, z_s + 0.6])
+bpy.ops.object.camera_add(location=(c, c - 15.0, z_s + 3.2))
+cam = bpy.context.object; sc.camera = cam; cam.data.lens = 24; cam.data.clip_end = 300
+tgt = np.array([c, c + 2.0, z_s + 1.4])
 dvec = tgt - np.array(cam.location)
 cam.rotation_euler = (math.atan2(math.hypot(dvec[0], dvec[1]), -dvec[2]), 0, math.atan2(dvec[1], dvec[0]) - math.pi / 2)
 cam.data.dof.use_dof = True; cam.data.dof.focus_distance = float(np.linalg.norm(dvec)); cam.data.dof.aperture_fstop = 1.6
