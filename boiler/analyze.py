@@ -41,7 +41,11 @@ for ts in u.trajectory[::STRIDE]:
     p = n2.positions / 10.0
     L = float(box[0])
     o = ow.positions / 10.0
-    zs = np.sort(o[:, 2]); z_surf = np.percentile(o[:, 2], 99.5)     # top of the liquid
+    # top of the liquid: highest 0.25 nm bin above the wall whose density is > half the slab's median density
+    # (a height percentile would be pulled up by vapour molecules at high temperature)
+    hb, eb = np.histogram(o[:, 2] % box[2], bins=np.arange(0, box[2] + 0.25, 0.25))
+    liq = hb > 0.5 * np.median(hb[hb > 0.3 * hb.max()])
+    z_surf = float(eb[np.nonzero(liq)[0].max() + 1])
     lab = clusters(p, box)
     sizes = np.bincount(lab)
     big = np.argmax(sizes)
