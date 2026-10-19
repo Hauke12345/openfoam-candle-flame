@@ -22,7 +22,8 @@ L = meta['LXY']; zt = meta['z_wall_top']; cx = cy = L / 2
 
 
 def clusters(p, box):
-    pp = p.copy(); pp[:, 2] = pp[:, 2] % box[2]
+    pp = p.copy(); pp[:, :2] %= box[:2]; pp[:, 2] = pp[:, 2] % box[2]
+    pp = np.minimum(pp, np.array([box[0], box[1], box[2] * 10]) * (1 - 1e-7))
     t = cKDTree(pp, boxsize=[box[0], box[1], box[2] * 10])      # periodic in x, y only
     pairs = t.query_pairs(0.55, output_type='ndarray')
     n = len(p)
@@ -35,6 +36,7 @@ rows = []
 for ts in u.trajectory[::STRIDE]:
     box = ts.dimensions[:3] / 10.0
     p = n2.positions / 10.0
+    L = float(box[0])
     o = ow.positions / 10.0
     zs = np.sort(o[:, 2]); z_surf = np.percentile(o[:, 2], 99.5)     # top of the liquid
     lab = clusters(p, box)
@@ -50,7 +52,8 @@ for ts in u.trajectory[::STRIDE]:
     # bubble volume: empty grid cells between the wall and 0.5 nm below the free surface
     gx = np.arange(0.1, L, 0.2); gz = np.arange(zt + 0.2, z_surf - 0.5, 0.2)
     G = np.stack(np.meshgrid(gx, gx, gz, indexing='ij'), -1).reshape(-1, 3)
-    tw = cKDTree(np.c_[o[:, 0] % L, o[:, 1] % L, o[:, 2]], boxsize=[L, L, 1e3])
+    ow_w = np.c_[o[:, 0] % L, o[:, 1] % L, o[:, 2] % box[2]]
+    tw = cKDTree(np.minimum(ow_w, [L * (1 - 1e-7), L * (1 - 1e-7), 1e3]), boxsize=[L, L, 1e3])
     empty = np.array([len(x) == 0 for x in tw.query_ball_point(G, 0.32)])
     vol = float(empty.sum() * 0.2 ** 3)
     t = ts.time

@@ -85,9 +85,9 @@ obWP, obWH = instancer('WP', 0.16, m_wp), instancer('WH', 0.16, m_wh)
 
 # camera: in front of the cut, slightly above, looking at the patch; scene units = nm
 cx = cy = L / 2; zt = meta['z_wall_top']
-bpy.ops.object.camera_add(location=(cx, -8.5, zt + 4.0))
-cam = bpy.context.object; sc.camera = cam; cam.data.lens = 38
-d = np.array([cx, cy, zt + 1.8]) - np.array(cam.location)
+bpy.ops.object.camera_add(location=(cx, -10.5, zt + 4.2))
+cam = bpy.context.object; sc.camera = cam; cam.data.lens = 36
+d = np.array([cx, cy, zt + 2.6]) - np.array(cam.location)
 cam.rotation_euler = (math.atan2(math.hypot(d[0], d[1]), -d[2]), 0, math.atan2(d[1], d[0]) - math.pi / 2)
 cam.data.dof.use_dof = True; cam.data.dof.focus_distance = float(np.linalg.norm(d)); cam.data.dof.aperture_fstop = 2.8
 for loc, e, s in (((cx - 6, -6, 8), 2500, 6), ((cx + 7, -2, 4), 900, 5), ((cx, cy + 6, 9), 1200, 6)):
