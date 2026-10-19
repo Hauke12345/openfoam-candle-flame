@@ -15,3 +15,5 @@ quasi3d/out/q3d_atlas/
 quasi3d/out/gust_good/
 quasi3d/out/movie_frames/
 quasi3d/out/of3d_frames/
+boiler/run*/
+boiler/frames*/
