@@ -59,15 +59,17 @@ for ts in u.trajectory[::STRIDE]:
     tw = cKDTree(np.minimum(ow_w, [L * (1 - 1e-7), L * (1 - 1e-7), 1e3]), boxsize=[L, L, 1e3])
     empty = np.array([len(x) == 0 for x in tw.query_ball_point(G, 0.32)])
     vol = float(empty.sum() * 0.2 ** 3)
+    near = (np.hypot(G[:, 0] - cx, G[:, 1] - cy) < meta['R_PATCH'] + 0.6) & (G[:, 2] < zt + 2.5)
+    pvol = float((empty & near).sum() * 0.2 ** 3)     # water-free volume over the patch (the seed / vapour bubble)
     t = ts.time
     T = T0 + (T1 - T0) * min(t / 2000.0, 1.0)
     rows.append(dict(t_ps=float(t), T=T, n2_largest=int(sizes.max()), n2_clustered=int(sizes[sizes >= 4].sum()),
                      centre=[float(c_xy[0]), float(c_xy[1]), float(c_z)], on_patch=on_patch, degassed=degassed,
-                     bubble_nm3=vol, z_surface=float(z_surf)))
+                     bubble_nm3=vol, patch_void_nm3=pvol, z_surface=float(z_surf)))
 json.dump(dict(meta=meta, frames=rows), open(f'{RUN}/analysis_{NAME}.json', 'w'), indent=1)
 r = rows[-1]
 print(f"{len(rows)} frames, last t={r['t_ps']:.0f} ps T={r['T']:.0f} K: largest N2 cluster {r['n2_largest']}, "
-      f"centre {np.round(r['centre'], 2)}, on patch {r['on_patch']}, degassed {r['degassed']}, empty volume {r['bubble_nm3']:.2f} nm3")
+      f"centre {np.round(r['centre'], 2)}, on patch {r['on_patch']}, degassed {r['degassed']}, empty volume {r['bubble_nm3']:.2f} nm3, over patch {r['patch_void_nm3']:.2f} nm3")
 
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 t = np.array([x['t_ps'] for x in rows]) / 1000
@@ -75,6 +77,6 @@ fig, ax = plt.subplots(1, 3, figsize=(12, 3.4))
 ax[0].plot(t, [x['n2_largest'] for x in rows], label='largest N2 cluster')
 ax[0].plot(t, [x['degassed'] for x in rows], label='N2 escaped above the water')
 ax[0].set_xlabel('t (ns)'); ax[0].set_ylabel('molecules'); ax[0].legend(fontsize=8)
-ax[1].plot(t, [x['bubble_nm3'] for x in rows]); ax[1].set_xlabel('t (ns)'); ax[1].set_ylabel('water-free volume (nm³)')
+ax[1].plot(t, [x['bubble_nm3'] for x in rows], label='whole slab'); ax[1].plot(t, [x['patch_void_nm3'] for x in rows], label='over the patch'); ax[1].legend(fontsize=8); ax[1].set_xlabel('t (ns)'); ax[1].set_ylabel('water-free volume (nm³)')
 ax[2].plot(t, [x['T'] - 273.15 for x in rows]); ax[2].set_xlabel('t (ns)'); ax[2].set_ylabel('T (°C)')
 fig.tight_layout(); fig.savefig(f'{RUN}/analysis_{NAME}.png', dpi=110)
