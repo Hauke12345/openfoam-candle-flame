@@ -2,7 +2,7 @@
 
 The heating takes minutes, bubbles move in milliseconds: the movie plays chosen windows in real time and
 time-lapses the rest. TIMELINE rows: (t_start, t_end, sim seconds per video second).
-usage: python3 export_frames.py RUNDIR OUTDIR [fps=24]   -> OUTDIR/f%05d.npz + OUTDIR/frames.json
+usage: python3 export_frames.py RUNDIR OUTDIR [fps=24] [timeline=kettle/timeline.json]   -> OUTDIR/f%05d.npz + OUTDIR/frames.json
 """
 import sys, os, json, glob
 import numpy as np
@@ -12,7 +12,7 @@ FPS = float(sys.argv[3]) if len(sys.argv) > 3 else 24.0
 os.makedirs(OUT, exist_ok=True)
 files = sorted(glob.glob(f'{RUN}/snap/s*.npz'))
 t_snap = np.array([float(np.load(f)['sc'][0]) for f in files])
-TL = json.load(open(f'{RUN}/timeline.json'))          # [[t0, t1, speed, label], ...]
+TL = json.load(open(sys.argv[4] if len(sys.argv) > 4 else os.path.join(os.path.dirname(__file__), 'timeline.json')))  # [[t0, t1, speed, label]]
 
 info = []
 k = 0
