@@ -3,7 +3,7 @@
 The view looks along the water surface (slightly down) from inside the gas. The box is tiled 3 x 3 laterally
 (periodic images) so the surface looks extended. Only the top ~1.5 nm of the liquid is drawn (the rest is hidden).
 Colours: water O red / H white (vapour molecules in the gas glow slightly), N2 blue, O2 green, Ar violet.
-usage: python3 render_interface.py RUNDIR OUTDIR [RX=960] [RY=540] [SPP=16] [first=0] [last=-1] [stride=1]
+usage: [TRANSPARENT=1] python3 render_interface.py RUNDIR OUTDIR [RX=960] [RY=540] [SPP=16] [first=0] [last=-1] [stride=1]
 """
 import sys, os, json, math
 import numpy as np
@@ -30,6 +30,9 @@ sc.render.resolution_x, sc.render.resolution_y = RX, RY
 sc.view_settings.view_transform = 'AgX'
 world = bpy.data.worlds.new('w'); sc.world = world; world.use_nodes = True
 world.node_tree.nodes['Background'].inputs[0].default_value = (0.010, 0.012, 0.018, 1)
+if os.environ.get('TRANSPARENT'):                 # for compositing over another picture (portrait cut)
+    sc.render.film_transparent = True
+    sc.render.image_settings.file_format = 'PNG'; sc.render.image_settings.color_mode = 'RGBA'
 
 def material(name, rgb, rough=0.35, emit=0.0):
     m = bpy.data.materials.new(name); m.use_nodes = True
