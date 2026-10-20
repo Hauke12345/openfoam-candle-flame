@@ -59,3 +59,28 @@ cd .. && python3 analyze.py run1 heat 1
 python3 render_md.py run1 frames_heat heat 2 960 540 16
 python3 make_movie.py degas.mp4 24 frames_heat:293:368:degas
 ```
+
+## Close-up of a real bubble wall (`interface/`)
+The nanobubble above is a dense gas cluster on a model wall. A real bubble in a kettle (~1 mm) is quite different
+up close:
+- Its wall is **flat** at the nm scale.
+- Its gas is **dilute**: at 1 atm there are 0.025 molecules/nm³, i.e. ~3.4 nm between molecules. They fly ballistically at ~500 m/s; the mean free path is ~65 nm.
+
+`interface/build_interface.py` sets up a slab of 8 × 8 × 4 nm SPC/E water and a 40 nm gas column at 1 atm,
+with the real composition at temperature T: water vapour at p_v(T), the rest dry air.
+- **20 °C (air bubble):** 49 N₂, 13 O₂, 1 Ar, 2 H₂O. CO₂ at 0.04 % would be 0.03 molecules here, so there is none.
+- **98 °C (steam bubble):** 47 H₂O, 3 N₂, 1 O₂.
+
+Gas models: 2-site N₂ and O₂, 1-site Ar (TraPPE-like LJ). The liquid holds ~0.1 dissolved N₂ at the real solubility, so effectively none.
+
+How the runs were done:
+- The slab is equilibrated alone first (50 ps). The gas is then inserted with fresh Maxwell velocities and settled for 5 ps.
+- Production: 40 ps, written every 0.05 ps.
+
+Rendering:
+- `render_interface.py` looks along the surface from inside the gas. The box is tiled 3 × 3 (periodic images).
+- `make_interface_movie.py` adds the captions, legend and clock. In the movie, 1 s of video = 1.2 ps.
+
+Movie: `media/bubble_wall_molecules.mp4`.
+
+Caveat: SPC/E has a lower vapour pressure than real water, so over nanoseconds some of the vapour at 98 °C would condense. Over the 20 ps shown, the real composition holds.
