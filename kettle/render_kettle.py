@@ -11,6 +11,7 @@ Water: Principled BSDF transmission, IOR 1.33 + Volume Absorption. Bubbles: IOR 
 usage: python3 render_kettle.py FRAMEDIR OUTDIR [RX=1280] [RY=720] [SPP=32] [first=0] [last=-1] [stride=1]
        python3 render_kettle.py --test OUTPNG [RX=1280] [RY=720] [SPP=32]
 FRAMEDIR holds f%05d.npz with xyz (N,3) m, r (N,) m, h, A, phase, steam (0..1), led (0..1).
+Optional per-frame keys: cam (3), tgt (3), lens (mm), fstop, focus (distance, m) (camera path); rmin (minimum render radius, m).
 """
 import sys, os, glob, math, time
 import numpy as np
@@ -334,7 +335,7 @@ def build_bubbles():
 ob_bub = build_bubbles()
 
 
-def set_bubbles(xyz, r):
+def set_bubbles(xyz, r, rmin=None):
     me = ob_bub.data; me.clear_geometry()
     n = len(r)
     me.vertices.add(n)
@@ -343,7 +344,7 @@ def set_bubbles(xyz, r):
     if 'rad' not in me.attributes:
         me.attributes.new('rad', 'FLOAT', 'POINT')
     if n:
-        me.attributes['rad'].data.foreach_set('value', np.maximum(np.asarray(r, np.float32), MIN_R_RENDER))
+        me.attributes['rad'].data.foreach_set('value', np.maximum(np.asarray(r, np.float32), MIN_R_RENDER if rmin is None else rmin))
     me.update()
 
 
@@ -448,6 +449,20 @@ ob_cam.location = (-0.20, -1.28, 0.34)
 tgt = bpy.data.objects.new('camtgt', None); tgt.location = (0.0, 0, 0.082); sc.collection.objects.link(tgt)
 c = ob_cam.constraints.new('TRACK_TO'); c.target = tgt; c.track_axis = 'TRACK_NEGATIVE_Z'; c.up_axis = 'UP_Y'
 cam_d.dof.use_dof = True; cam_d.dof.focus_object = tgt; cam_d.dof.aperture_fstop = 4.0
+cam_d.clip_start = 1e-4
+CAM0 = (tuple(ob_cam.location), tuple(tgt.location), cam_d.lens, cam_d.dof.aperture_fstop)
+
+
+def set_camera(loc=None, target=None, lens=None, fstop=None, focus=None):
+    """per-frame camera (location, look-at/focus point, lens mm, f-stop); None keeps the default view."""
+    ob_cam.location = loc if loc is not None else CAM0[0]
+    tgt.location = target if target is not None else CAM0[1]
+    cam_d.lens = lens if lens is not None else CAM0[2]
+    cam_d.dof.aperture_fstop = fstop if fstop is not None else CAM0[3]
+    if focus is None:
+        cam_d.dof.focus_object = tgt
+    else:
+        cam_d.dof.focus_object = None; cam_d.dof.focus_distance = focus
 
 # ----------------------------------------------------------------------------------------------------- render settings
 cy = sc.cycles
@@ -506,7 +521,13 @@ def synthetic():
 
 
 def apply_frame(d):
-    set_bubbles(np.asarray(d['xyz'], float).reshape(-1, 3), np.asarray(d['r'], float).ravel())
+    set_bubbles(np.asarray(d['xyz'], float).reshape(-1, 3), np.asarray(d['r'], float).ravel(),
+                float(d['rmin']) if 'rmin' in d else None)
+    if 'cam' in d:
+        set_camera(tuple(map(float, d['cam'])), tuple(map(float, d['tgt'])), float(d['lens']), float(d['fstop']),
+                   float(d['focus']) if 'focus' in d else None)
+    else:
+        set_camera()
     set_params(float(d['h']), float(d['A']), float(d['phase']), float(d['steam']), float(d['led']))
 
 
@@ -527,6 +548,6 @@ if __name__ == '__main__':
         sel = files[first:None if last < 0 else last][::stride]
         for f in sel:
             k = int(os.path.basename(f)[1:-4]); z = np.load(f)
-            apply_frame({key: z[key] for key in ('xyz', 'r', 'h', 'A', 'phase', 'steam', 'led')})
+            apply_frame({key: z[key] for key in z.files})
             t0 = time.time(); render_to(os.path.abspath(f'{OUT}/f{k:05d}.png'))
             print(f'frame {k} N={len(z["r"])} {time.time() - t0:.1f} s', flush=True)
