@@ -8,7 +8,7 @@ usage: python3 make_portrait_movie.py OUT.mp4 PLANDIR KETTLE_PNG_DIR RUNDIR MD_P
 """
 import sys, os, json, glob, subprocess
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -29,7 +29,7 @@ CAPS = {
     'cut': ('Cut through the kettle (CFD)', ['Hot water rises from the plate,', 'cool water sinks: turbulent plumes.', 'Colour = temperature, dots follow the flow']),
     'zoom': ('One air bubble on the glass', ['0.4 mm across, true size']),
     'zoomin': ('Into the bottom of that bubble', ['about 100 000 × closer']),
-    'md': ('The bubble wall, molecule by molecule', ['Water below, air above (1 atm):', 'N₂ blue, O₂ green, Ar violet,', 'water vapour glowing. 1 s = 1.2 ps']),
+    'md': ('Molecules at the bubble wall', ['Water below, air above (1 atm):', 'N₂ blue, O₂ green, Ar violet,', 'water vapour glowing. 1 s = 1.2 ps']),
     'zoomout': ('Back out', ['']),
     'zoomback': ('Back out', ['']),
     'sing': ('The kettle "sings"', ['Steam bubbles form on the plate', 'and collapse in the cooler water']),
@@ -119,10 +119,22 @@ def zoom_into(im, z):
     return im.resize((W, H), Image.LANCZOS, box=box)
 
 macro_bg = None
+def md_layer(path):
+    """molecule layer with more contrast and dark contours around every sphere (edges of brightness and alpha)."""
+    m = Image.open(path).convert('RGBA').resize((W, H), Image.LANCZOS)
+    rgb, al = m.convert('RGB'), m.getchannel('A')
+    rgb = ImageEnhance.Contrast(rgb).enhance(1.35); rgb = ImageEnhance.Color(rgb).enhance(1.3)
+    lum = np.asarray(rgb.convert('L').filter(ImageFilter.GaussianBlur(0.8)), float)
+    gy, gx = np.gradient(lum); ga = np.gradient(np.asarray(al, float))
+    edge = np.hypot(gx, gy) / 255 * 2.2 + np.hypot(*ga) / 255 * 1.5
+    k = np.clip((edge - 0.10) / 0.25, 0, 1)[..., None] * 0.85
+    out = np.asarray(rgb, float) * (1 - k) + np.array([12, 10, 14]) * k
+    return Image.fromarray(out.astype(np.uint8)), al
+
 def md_over(i, bg):
-    m = Image.open(mdf[min(i, len(mdf) - 1)]).convert('RGBA').resize((W, H), Image.LANCZOS)
-    out = bg.copy().convert('RGBA'); out.alpha_composite(m)
-    return out.convert('RGB')
+    rgb, al = md_layer(mdf[min(i, len(mdf) - 1)])
+    base = ImageEnhance.Brightness(bg).enhance(0.45)           # dim the blurred bubble behind the molecules
+    return Image.composite(rgb, base, al)
 
 proc = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}',
                          '-r', str(int(FPS)), '-i', '-', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '19', OUT],
