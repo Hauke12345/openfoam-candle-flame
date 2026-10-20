@@ -26,7 +26,7 @@ F3 = ImageFont.truetype(f'{fdir}/DejaVuSans.ttf', 22)
 CAPS = {
     'cold': ('Switched on: 20 °C', ['The plate under the water', 'heats up first']),
     'degas': ('Air comes out of the water', ['Warm water holds less air.', 'Bubbles at true size: most < 0.5 mm']),
-    'cut': ('Cut through the kettle (CFD)', ['Hot water rises from the plate,', 'cool water sinks: turbulent plumes.', 'Colour = temperature, dots follow the flow']),
+    'cut': ('Cut through the kettle (CFD)', ['Hot water rises above the heating ring,', 'cooler water sinks in the middle.', 'Colour = temperature, dots follow the flow']),
     'zoom': ('One air bubble on the glass', ['0.4 mm across, true size']),
     'zoomin': ('Into the bottom of that bubble', ['about 100 000 × closer']),
     'md': ('Molecules at the bubble wall', ['Water below, air above (1 atm):', 'N₂ blue, O₂ green, Ar violet,', 'water vapour glowing. 1 s = 1.2 ps']),
@@ -101,12 +101,19 @@ def cut_frame(e, prev_snap):
     m = np.abs(xyz[:, 1]) < 0.002
     for (x, _, z), r in zip(xyz[m], rb[m]):
         axc.add_patch(plt.Circle((x * 100, z * 100), max(r * 100, 0.02), fill=False, ec=(0.75, 0.9, 1.0), lw=0.7))
-    axc.set_xlim(-R * 100, R * 100); axc.set_ylim(-0.5, HH * 100 + 0.3)
-    axc.axhspan(-0.5, 0, color=(0.55, 0.57, 0.6))
+    axc.set_xlim(-R * 100, R * 100); axc.set_ylim(-3.0, HH * 100 + 1.6)
+    axc.fill_between([-R * 100, R * 100], -0.5, 0, color=(0.55, 0.57, 0.6))
     axc.axis('off')
     cb = fig.colorbar(im, cax=cax, orientation='horizontal'); cb.ax.tick_params(labelsize=14, colors='w')
     cb.set_label('water temperature (°C)', color='w', fontsize=15)
     axc.text(0, -1.4, 'heating plate', color='w', ha='center', fontsize=13)
+    axc.axvline(0, color='w', lw=0.8, ls=(0, (4, 4)), alpha=0.7)
+    axc.text(0, HH * 100 + 0.6, 'kettle axis', color='w', ha='center', fontsize=13)
+    for sx in (-1, 1):
+        axc.text(sx * (R * 100 - 0.1), HH * 100 + 0.6, 'glass', color=(0.75, 0.85, 0.95), ha='right' if sx > 0 else 'left', fontsize=13)
+        axc.add_patch(plt.Rectangle((sx * 4.5 - 0.8, -0.5), 1.6, 0.35, color=(1.0, 0.35, 0.15)))
+    axc.text(4.5, -2.4, 'heating ring', color=(1.0, 0.55, 0.35), ha='center', fontsize=12)
+    axc.text(-4.5, -2.4, 'heating ring', color=(1.0, 0.55, 0.35), ha='center', fontsize=12)
     fig.canvas.draw()
     return Image.frombuffer('RGBA', fig.canvas.get_width_height(), bytes(fig.canvas.buffer_rgba())).convert('RGB')
 
